@@ -311,8 +311,3 @@ function PrivateKeyInput({ onSave }) {
     </div>
   );
 }
-target.value)} data-testid="keeper-pk-input" />
-      <button onClick={save} disabled={!pk.trim()} className="btn-primary px-4 py-2 mt-2 w-full text-sm" data-testid="keeper-pk-save">导入并加密保存</button>
-    </div>
-  );
-}
