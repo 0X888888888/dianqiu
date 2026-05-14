@@ -27,6 +27,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, ConfigDict
 from starlette.middleware.cors import CORSMiddleware
 from web3 import Web3
+from web3.middleware import ExtraDataToPOAMiddleware
 from eth_account import Account
 
 ROOT_DIR = Path(__file__).parent
@@ -181,6 +182,7 @@ VAULT_ABI = json.loads("""
 {"type":"function","name":"shotWindow","inputs":[],"outputs":[{"type":"uint256"}],"stateMutability":"view"},
 {"type":"function","name":"minShotValue","inputs":[],"outputs":[{"type":"uint256"}],"stateMutability":"view"},
 {"type":"function","name":"keeperFeeBps","inputs":[],"outputs":[{"type":"uint256"}],"stateMutability":"view"},
+{"type":"function","name":"lastShotPotMark","inputs":[],"outputs":[{"type":"uint256"}],"stateMutability":"view"},
 {"type":"function","name":"description","inputs":[],"outputs":[{"type":"string"}],"stateMutability":"view"},
 {"type":"function","name":"shoot","inputs":[{"name":"player","type":"address"}],"outputs":[],"stateMutability":"nonpayable"},
 {"type":"function","name":"settleRound","inputs":[],"outputs":[],"stateMutability":"nonpayable"},
@@ -288,10 +290,10 @@ class BotManager:
             vault = w3.eth.contract(address=Web3.to_checksum_address(cfg.vault_address), abi=VAULT_ABI)
             tax_token_addr = Web3.to_checksum_address(cfg.tax_token_address)
 
-            # 同步起始区块
+            # 同步起始区块（首次启动时往前回退 1500 块约 1.5 小时，确保不漏事件）
             current_block = w3.eth.block_number
             if self.last_block == 0:
-                self.last_block = max(0, current_block - 100)
+                self.last_block = max(0, current_block - 1500)
 
             self.status = "running"
             poll_interval = max(2, cfg.poll_interval_seconds)
@@ -398,7 +400,12 @@ class BotManager:
 
         try:
             for lg in shot_logs:
-                ts = w3.eth.get_block(lg["blockNumber"])["timestamp"]
+                # 直接用当前时间作 timestamp，绕开 web3.py POA middleware 问题（BSC 是 POA）
+                # 因为 scan 几乎实时，差距极小
+                ts = int(time.time())
+                txh = lg["transactionHash"].hex() if hasattr(lg["transactionHash"], "hex") else str(lg["transactionHash"])
+                if not txh.startswith("0x"):
+                    txh = "0x" + txh
                 doc = {
                     "round_id": int(lg["args"]["round"]),
                     "shooter": str(lg["args"]["shooter"]),
@@ -407,8 +414,8 @@ class BotManager:
                     "pot_after_wei": str(lg["args"]["potAfter"]),
                     "shot_index": int(lg["args"]["shotIndex"]),
                     "block_number": int(lg["blockNumber"]),
-                    "tx_hash": lg["transactionHash"].hex(),
-                    "timestamp": int(ts),
+                    "tx_hash": txh,
+                    "timestamp": ts,
                 }
                 await col_shots.update_one(
                     {"tx_hash": doc["tx_hash"], "shot_index": doc["shot_index"]},
@@ -418,14 +425,17 @@ class BotManager:
                 await self.log("info", f"⚽ Shot detected: round#{doc['round_id']} by {doc['shooter']}")
 
             for lg in goal_logs:
+                txh = lg["transactionHash"].hex() if hasattr(lg["transactionHash"], "hex") else str(lg["transactionHash"])
+                if not txh.startswith("0x"):
+                    txh = "0x" + txh
                 doc = {
                     "round_id": int(lg["args"]["round"]),
                     "winner": str(lg["args"]["winner"]),
                     "prize_wei": str(lg["args"]["prize"]),
                     "carried_over_wei": str(lg["args"]["carriedOver"]),
                     "total_shots": int(lg["args"]["totalShots"]),
-                    "settled_at": int(w3.eth.get_block(lg["blockNumber"])["timestamp"]),
-                    "tx_hash": lg["transactionHash"].hex(),
+                    "settled_at": int(time.time()),
+                    "tx_hash": txh,
                 }
                 await col_rounds.update_one(
                     {"round_id": doc["round_id"]},
@@ -434,38 +444,47 @@ class BotManager:
                 await self.broadcast("goal", doc)
                 await self.log("info", f"🏆 GOAL! Round#{doc['round_id']} winner={doc['winner']} prize={doc['prize_wei']} wei")
         except Exception as e:
-            await self.log("warn", f"处理 vault 事件失败: {str(e)[:120]}")
+            await self.log("warn", f"处理 vault 事件失败: {str(e)[:160]}")
             return False
         return True
 
     async def _maybe_auto_shoot(self, w3, vault, cfg: VaultConfig):
-        """检查是否应该自动 shoot"""
-        if not cfg.keeper_private_key_encrypted or not self.last_buyers:
+        """检查是否应该自动 shoot
+        新逻辑：基于 currentPot 与 lastShotPotMark 的差额判断"""
+        if not cfg.keeper_private_key_encrypted:
             return
 
         try:
-            pending = vault.functions.pendingTaxInProcessor().call()
+            current_pot = vault.functions.currentPot().call()
+            last_mark = vault.functions.lastShotPotMark().call()
             min_shot = vault.functions.minShotValue().call()
 
-            # 如果累积税不够 minShotValue，跳过
-            if pending < min_shot * 2:  # 留 buffer
-                return
+            new_amount = current_pot - last_mark
+            if new_amount < min_shot:
+                return  # 还没到门槛
 
-            # 选最近 60s 内最新的买家
-            latest_buyer = max(self.last_buyers.items(), key=lambda kv: kv[1])
-            buyer_addr = latest_buyer[0]
+            # 选最近 60s 内最新的买家；如果没有就直接用 keeper 自己（作为兜底，确保游戏跑起来）
+            if self.last_buyers:
+                latest_buyer = max(self.last_buyers.items(), key=lambda kv: kv[1])
+                buyer_addr = latest_buyer[0]
+            else:
+                # 兜底：直接用 keeper 地址作为 player（让游戏跑起来，不致死锁奖池）
+                acct = Account.from_key(decrypt_str(cfg.keeper_private_key_encrypted))
+                buyer_addr = acct.address
+                await self.log("info", f"无识别到买家，兜底用 keeper 地址 {buyer_addr[:10]}... 作为 shooter")
 
-            # 检查 cooldown：同一买家 30s 内不重复 shoot（防 spam）
+            # 检查 cooldown：同一买家 20s 内不重复 shoot（防 spam）
             recent = await col_shots.find_one(
                 {"shooter": buyer_addr},
                 sort=[("timestamp", -1)]
             )
-            if recent and int(time.time()) - recent.get("timestamp", 0) < 30:
+            if recent and int(time.time()) - recent.get("timestamp", 0) < 20:
                 return
 
+            await self.log("info", f"⚽ 触发 shoot: pot+{new_amount} wei, player={buyer_addr[:10]}...")
             await self._send_shoot(w3, vault, cfg, buyer_addr)
         except Exception as e:
-            await self.log("warn", f"_maybe_auto_shoot 错误: {str(e)[:120]}")
+            await self.log("warn", f"_maybe_auto_shoot 错误: {str(e)[:160]}")
 
     async def _maybe_settle(self, w3, vault, cfg: VaultConfig):
         """倒计时归零自动结算（任何人可调，无需私钥）"""
@@ -673,6 +692,14 @@ async def bot_status(_=Depends(verify_jwt)):
         "recent_buyers": list(bot_manager.last_buyers.keys())[:10],
     }
 
+@api.post("/admin/bot/rewind")
+async def rewind_bot(blocks: int = 500, _=Depends(verify_jwt)):
+    """让 Bot 回退 N 个 block 重新扫描（不需要重启）"""
+    blocks = max(0, min(blocks, 50000))
+    bot_manager.last_block = max(0, bot_manager.last_block - blocks)
+    await bot_manager.log("info", f"手动回退扫描游标 {blocks} blocks, 新 last_block={bot_manager.last_block}")
+    return {"last_block": bot_manager.last_block}
+
 @api.get("/admin/bot/logs")
 async def bot_logs(limit: int = 100, _=Depends(verify_jwt)):
     docs = await col_bot_logs.find({}, {"_id": 0}).sort([("timestamp", -1)]).limit(limit).to_list(length=limit)
@@ -686,6 +713,7 @@ async def manual_shoot(player: str, _=Depends(verify_jwt)):
         raise HTTPException(400, detail="not_configured")
     try:
         w3 = Web3(Web3.HTTPProvider(cfg.rpc_url))
+        w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
         vault = w3.eth.contract(address=Web3.to_checksum_address(cfg.vault_address), abi=VAULT_ABI)
         priv = decrypt_str(cfg.keeper_private_key_encrypted)
         acct = Account.from_key(priv)
