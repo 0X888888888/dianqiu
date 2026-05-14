@@ -9,19 +9,23 @@ export default function Admin() {
 
 function Login({ onLogin }) {
   const [username, setUsername] = useState("admin");
-  const [password, setPassword] = useState("");
+  const [password, setPassword] = useState("shootout2026");
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const submit = async (e) => {
-    e.preventDefault();
+  const submit = async () => {
     setErr(""); setLoading(true);
     try {
-      const r = await api.post("/admin/login", { username, password });
+      const r = await api.post("/admin/login", { username: username.trim(), password });
       onLogin(r.data.token);
     } catch (e) {
-      setErr(e.response?.data?.detail || "登录失败 / Login failed");
+      const detail = e.response?.data?.detail || e.message || "登录失败 / Login failed";
+      setErr(detail === "invalid_credentials" ? "用户名或密码错误 / Invalid username or password" : detail);
     } finally { setLoading(false); }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter") submit();
   };
 
   return (
@@ -29,22 +33,47 @@ function Login({ onLogin }) {
       <div className="panel-bright p-8 max-w-md w-full">
         <div className="font-display text-3xl text-white mb-1">⚽ ADMIN</div>
         <div className="text-muted text-sm mb-6">管理员登录 / Admin Login</div>
-        <form onSubmit={submit} className="space-y-4">
+        <div className="space-y-4">
           <div>
             <div className="text-muted text-xs uppercase mb-1">Username</div>
-            <input value={username} onChange={(e) => setUsername(e.target.value)} data-testid="login-username" />
+            <input
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="admin"
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck="false"
+              data-testid="login-username"
+              style={{ backgroundColor: "#1B241B", color: "#FFFFFF", WebkitTextFillColor: "#FFFFFF" }}
+            />
           </div>
           <div>
             <div className="text-muted text-xs uppercase mb-1">Password</div>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} data-testid="login-password" />
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="shootout2026"
+              autoComplete="new-password"
+              data-testid="login-password"
+              style={{ backgroundColor: "#1B241B", color: "#FFFFFF", WebkitTextFillColor: "#FFFFFF" }}
+            />
           </div>
           {err && <div className="text-danger text-sm" data-testid="login-error">{err}</div>}
-          <button type="submit" disabled={loading} className="btn-primary px-6 py-3 w-full" data-testid="login-submit">
+          <button
+            type="button"
+            onClick={submit}
+            disabled={loading}
+            className="btn-primary px-6 py-3 w-full"
+            data-testid="login-submit"
+          >
             {loading ? "Loading…" : "登录 / Login"}
           </button>
-        </form>
+        </div>
         <div className="text-muted text-xs mt-4">
-          默认账户 / Default: admin / shootout2026<br/>
+          默认账户 / Default: <code className="text-accent">admin</code> / <code className="text-accent">shootout2026</code><br/>
           请尽快修改环境变量 ADMIN_PASSWORD
         </div>
       </div>
