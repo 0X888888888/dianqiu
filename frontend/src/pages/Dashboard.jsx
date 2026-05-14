@@ -79,6 +79,17 @@ export default function Dashboard() {
           </div>
         )}
 
+        {state?.configured && state?.rpc_ok === false && (
+          <div className="max-w-7xl mx-auto px-4 py-6">
+            <div className="panel-bright p-6 text-center border-l-4 border-danger" data-testid="rpc-unreachable-banner">
+              <div className="text-danger font-display text-2xl mb-1">⚠ RPC UNREACHABLE</div>
+              <div className="text-muted text-sm">
+                金库地址已配置但无法读取链上状态。请检查 RPC URL 或 Vault 地址（前往 <a href="/admin" className="text-primary underline">/admin</a>）。
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* HERO: 大倒计时 + 奖池 */}
         <section className="max-w-7xl mx-auto px-4 pt-6 md:pt-10 pb-8">
           <div className="grid grid-cols-1 md:grid-cols-12 gap-4 md:gap-6">

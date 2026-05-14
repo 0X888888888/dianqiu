@@ -107,6 +107,7 @@ class VaultConfigUpdate(BaseModel):
 
 class GameState(BaseModel):
     configured: bool
+    rpc_ok: bool = False
     chain_id: int = 0
     vault_address: str = ""
     tax_token_address: str = ""
@@ -546,8 +547,10 @@ async def build_game_state() -> dict:
         if cfg.keeper_address:
             bal = w3.eth.get_balance(Web3.to_checksum_address(cfg.keeper_address))
             state.keeper_balance_bnb = str(bal)
+        state.rpc_ok = True
     except Exception as e:
         logger.warning(f"build_game_state 部分失败: {e}")
+        state.rpc_ok = False
     return state.model_dump()
 
 # ─── FastAPI ──────────────────────────────────────────────
@@ -674,11 +677,14 @@ async def manual_shoot(player: str, _=Depends(verify_jwt)):
 async def generate_keeper_wallet(_=Depends(verify_jwt)):
     """生成一个新的 Keeper 钱包并直接存储（私钥加密）"""
     acct = Account.create()
-    patch = VaultConfigUpdate(keeper_private_key=acct.key.hex())
+    pk_hex = acct.key.hex()
+    if not pk_hex.startswith("0x"):
+        pk_hex = "0x" + pk_hex
+    patch = VaultConfigUpdate(keeper_private_key=pk_hex)
     cfg = await update_config(patch)
     return {
         "address": cfg.keeper_address,
-        "private_key": acct.key.hex(),  # 仅这一次返回，请用户备份
+        "private_key": pk_hex,  # 仅这一次返回，请用户备份
         "warning": "请妥善备份私钥！此私钥不会再次显示。",
     }
 
