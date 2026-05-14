@@ -1,0 +1,6 @@
+forge-std/=lib/forge-std/src/
+@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/
+@openzeppelin-contracts-upgradeable/=lib/oz-upgradeable-stub/
+@openzeppelin/token/=lib/openzeppelin-contracts/contracts/token/
+@openzeppelin/access/=lib/openzeppelin-contracts/contracts/access/
+@openzeppelin/utils/=lib/openzeppelin-contracts/contracts/utils/
