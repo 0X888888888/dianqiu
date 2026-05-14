@@ -43,8 +43,9 @@ DEFAULT_ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'admin')
 DEFAULT_ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'changeme')
 
 # 默认 RPC（用户可在管理后台改）
+# BSC 主网推荐 publicnode（更宽松的速率限制），也可用 LlamaRPC、1RPC、Ankr 等
 DEFAULT_RPC_TESTNET = "https://data-seed-prebsc-1-s1.binance.org:8545"
-DEFAULT_RPC_MAINNET = "https://bsc-dataseed.bnbchain.org"
+DEFAULT_RPC_MAINNET = "https://bsc-rpc.publicnode.com"
 
 logger = logging.getLogger("vault-server")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(name)s | %(message)s')
@@ -201,7 +202,7 @@ VAULT_ABI = json.loads("""
 ]
 """)
 
-ERC20_TRANSFER_TOPIC = Web3.keccak(text="Transfer(address,address,uint256)").hex()
+ERC20_TRANSFER_TOPIC = "0x" + Web3.keccak(text="Transfer(address,address,uint256)").hex().removeprefix("0x")
 
 # ─── Bot Manager ──────────────────────────────────────────
 class BotManager:
@@ -214,6 +215,7 @@ class BotManager:
         self.last_buyers: Dict[str, int] = {}  # address -> timestamp 最近购买者池
         self.ws_clients: List[WebSocket] = []
         self._stop_flag = False
+        self._last_ratelimit_log = 0
 
     async def broadcast(self, event_type: str, data: dict):
         """向所有 WS 客户端推送事件"""
@@ -301,15 +303,17 @@ class BotManager:
 
                     head = w3.eth.block_number
                     if head > self.last_block:
-                        to_block = min(self.last_block + 500, head)
-
-                        # 1. 扫描 taxToken Transfer 事件识别买家
-                        await self._scan_transfers(w3, tax_token_addr, self.last_block + 1, to_block)
-
-                        # 2. 扫描 Vault 自己的事件
-                        await self._scan_vault_events(w3, vault, self.last_block + 1, to_block)
-
-                        self.last_block = to_block
+                        # 缩小批次 + 留一点 confirmation 缓冲（防止重组）
+                        safe_head = max(0, head - 1)
+                        to_block = min(self.last_block + 50, safe_head)
+                        if to_block > self.last_block:
+                            # 1. 扫描 taxToken Transfer 事件识别买家
+                            ok1 = await self._scan_transfers(w3, tax_token_addr, self.last_block + 1, to_block)
+                            # 2. 扫描 Vault 自己的事件
+                            ok2 = await self._scan_vault_events(w3, vault, self.last_block + 1, to_block)
+                            # 只有两边都成功才推进游标，否则下轮再扫这段
+                            if ok1 and ok2:
+                                self.last_block = to_block
 
                     # 3. 推送当前游戏状态
                     state = await build_game_state()
@@ -340,22 +344,31 @@ class BotManager:
         """扫 TaxToken Transfer 事件，识别买家（from=pool, to=buyer）"""
         try:
             logs = w3.eth.get_logs({
-                "fromBlock": from_block,
-                "toBlock": to_block,
+                "fromBlock": hex(from_block),
+                "toBlock": hex(to_block),
                 "address": tax_token,
                 "topics": [ERC20_TRANSFER_TOPIC],
             })
         except Exception as e:
-            await self.log("warn", f"扫 Transfer 失败: {e}")
-            return
+            err = str(e)
+            # 速率限制 — 仅每分钟最多一条日志，避免刷屏
+            now = int(time.time())
+            if "limit" in err.lower() or "429" in err or "32005" in err:
+                if now - self._last_ratelimit_log > 60:
+                    await self.log("warn", f"RPC 速率限制（建议换 RPC）：{err[:120]}")
+                    self._last_ratelimit_log = now
+            else:
+                await self.log("warn", f"扫 Transfer 失败 [{from_block}-{to_block}]: {err[:120]}")
+            return False
 
         for lg in logs:
             try:
                 from_addr = "0x" + lg["topics"][1].hex()[-40:]
                 to_addr = "0x" + lg["topics"][2].hex()[-40:]
-                # 启发：from 是合约（非零）, to 不是销毁地址
-                # 简化版：记录 to_addr 作为潜在买家，由 30s 衰减
-                if int(to_addr, 16) != 0 and to_addr.lower() != "0x000000000000000000000000000000000000dead":
+                # 买入识别：from 是 BondingCurve/Pair（非零地址）, to 是真实买家（非零、非销毁）
+                if (int(to_addr, 16) != 0
+                    and to_addr.lower() != "0x000000000000000000000000000000000000dead"
+                    and int(from_addr, 16) != 0):
                     self.last_buyers[Web3.to_checksum_address(to_addr)] = int(time.time())
             except Exception:
                 continue
@@ -363,13 +376,28 @@ class BotManager:
         # 清理 60s 以上的旧记录
         cutoff = int(time.time()) - 60
         self.last_buyers = {a: t for a, t in self.last_buyers.items() if t > cutoff}
+        return True
 
     async def _scan_vault_events(self, w3, vault, from_block: int, to_block: int):
         """扫 vault 的 ShotFired / GoalScored 事件，同步进数据库"""
         try:
             shot_evt = vault.events.ShotFired()
             goal_evt = vault.events.GoalScored()
-            for lg in shot_evt.get_logs(from_block=from_block, to_block=to_block):
+            shot_logs = shot_evt.get_logs(from_block=from_block, to_block=to_block)
+            goal_logs = goal_evt.get_logs(from_block=from_block, to_block=to_block)
+        except Exception as e:
+            err = str(e)
+            now = int(time.time())
+            if "limit" in err.lower() or "429" in err or "32005" in err:
+                if now - self._last_ratelimit_log > 60:
+                    await self.log("warn", f"RPC 速率限制（建议换 RPC）：{err[:120]}")
+                    self._last_ratelimit_log = now
+            else:
+                await self.log("warn", f"扫 vault 事件失败 [{from_block}-{to_block}]: {err[:120]}")
+            return False
+
+        try:
+            for lg in shot_logs:
                 ts = w3.eth.get_block(lg["blockNumber"])["timestamp"]
                 doc = {
                     "round_id": int(lg["args"]["round"]),
@@ -389,7 +417,7 @@ class BotManager:
                 await self.broadcast("shot", doc)
                 await self.log("info", f"⚽ Shot detected: round#{doc['round_id']} by {doc['shooter']}")
 
-            for lg in goal_evt.get_logs(from_block=from_block, to_block=to_block):
+            for lg in goal_logs:
                 doc = {
                     "round_id": int(lg["args"]["round"]),
                     "winner": str(lg["args"]["winner"]),
@@ -406,7 +434,9 @@ class BotManager:
                 await self.broadcast("goal", doc)
                 await self.log("info", f"🏆 GOAL! Round#{doc['round_id']} winner={doc['winner']} prize={doc['prize_wei']} wei")
         except Exception as e:
-            await self.log("warn", f"扫 vault 事件失败: {e}")
+            await self.log("warn", f"处理 vault 事件失败: {str(e)[:120]}")
+            return False
+        return True
 
     async def _maybe_auto_shoot(self, w3, vault, cfg: VaultConfig):
         """检查是否应该自动 shoot"""
@@ -435,7 +465,7 @@ class BotManager:
 
             await self._send_shoot(w3, vault, cfg, buyer_addr)
         except Exception as e:
-            await self.log("warn", f"_maybe_auto_shoot 错误: {e}")
+            await self.log("warn", f"_maybe_auto_shoot 错误: {str(e)[:120]}")
 
     async def _maybe_settle(self, w3, vault, cfg: VaultConfig):
         """倒计时归零自动结算（任何人可调，无需私钥）"""

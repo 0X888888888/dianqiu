@@ -126,6 +126,10 @@ contract PenaltyShootoutVault is VaultBaseV2 {
     /// @notice pull-pattern：发奖失败时存于此，winner 自取
     mapping(address => uint256) public pendingWithdrawals;
 
+    /// @notice 上次 shoot 时的 currentPot 快照，用于追踪"自上次射门以来新增的奖池"
+    /// @dev    解决 FLAP 自动 dispatch 在用户买入同 tx 内完成，导致 shoot 时拿不到 dispatched 的问题
+    uint256 public lastShotPotMark;
+
     /// @notice 重入锁
     uint256 private _locked = 1;
 
@@ -266,9 +270,9 @@ contract PenaltyShootoutVault is VaultBaseV2 {
 
     /// @notice 玩家或代理（如 Bot）调用此方法以"射门"
     /// @dev    流程：
-    ///         1. 调用 TaxProcessor.dispatch() 将累积税送入金库
-    ///         2. 验证：本次确实有 BNB 入账（marketQuoteBalance 之前 > 0）
-    ///         3. 满足 minShotValue → 记录 player 为最后射门者，重置倒计时
+    ///         1. 调用 TaxProcessor.dispatch() 尽量将累积税送入金库（可能 FLAP 已自动 dispatch 过）
+    ///         2. 验证：currentPot 自上次 shoot 以来增长 >= minShotValue
+    ///         3. 满足 → 记录 player 为最后射门者，重置倒计时
     ///         4. 给 msg.sender（Keeper）发放 keeperFeeBps 激励
     /// @param  player 要被记录为最后射门者的地址
     function shoot(address player) external nonReentrant {
@@ -279,30 +283,20 @@ contract PenaltyShootoutVault is VaultBaseV2 {
             _settleRoundInternal();
         }
 
-        uint256 potBefore = currentPot;
-
-        // 拉取税：触发 dispatch，将累积的 BNB 送入金库 receive()
+        // 拉取税：尽量触发 dispatch（FLAP 协议可能已经自动 dispatch 过了，此处只是兜底）
         address taxProcessor = IFlapTaxTokenLite(taxToken).taxProcessor();
-        // dispatch 可能 revert（如无可分配额度），用 try 包裹
         try ITaxProcessorLite(taxProcessor).dispatch{gas: 800000}() {} catch {}
 
-        uint256 dispatched = currentPot - potBefore;
-        if (dispatched == 0) revert NoTaxDispatched();
+        // 用奖池快照差额判断"自上次射门以来新流入的奖池"
+        uint256 newAmount = currentPot - lastShotPotMark;
+        if (newAmount < minShotValue) revert NoTaxDispatched();
 
-        // 计算 Keeper 激励（基于本次 dispatch 入账的净额）
-        uint256 keeperReward = (dispatched * keeperFeeBps) / 10000;
-        uint256 netToShot = dispatched - keeperReward;
-
-        // 调整奖池（receive 已经加了 dispatched，这里只需扣除 keeper 部分）
+        // 计算 Keeper 激励
+        uint256 keeperReward = (newAmount * keeperFeeBps) / 10000;
         currentPot -= keeperReward;
 
-        // 验证本次有效入池 >= minShotValue 才算有效射门
-        if (netToShot < minShotValue) {
-            // 入池金额过小，不算有效射门，仅累积到奖池（receive 已完成），keeper 也不奖励
-            // 把 keeperReward 加回奖池
-            currentPot += keeperReward;
-            revert NoTaxDispatched();
-        }
+        // 更新快照（扣 keeper 后）
+        lastShotPotMark = currentPot;
 
         // ✅ 有效射门：记录 + 重置倒计时
         lastShooter = player;
@@ -320,7 +314,7 @@ contract PenaltyShootoutVault is VaultBaseV2 {
             }
         }
 
-        emit ShotFired(currentRound, player, netToShot, deadline, currentPot, shotCount);
+        emit ShotFired(currentRound, player, newAmount - keeperReward, deadline, currentPot, shotCount);
     }
 
     /// @notice 散户一键模式：金库代理买 taxToken + 自动射门
@@ -432,6 +426,7 @@ contract PenaltyShootoutVault is VaultBaseV2 {
         // 重置状态准备下一轮
         currentRound += 1;
         currentPot = carryOver;
+        lastShotPotMark = carryOver;  // 滚入的 BNB 算作下一轮起始基线
         lastShooter = address(0);
         deadline = 0;
         shotCount = 0;
