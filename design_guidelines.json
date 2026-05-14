@@ -1,0 +1,85 @@
+{
+  "theme": "dark",
+  "archetype": "Archetype 2 (The Performance Pro) - Modified for Sports & Crypto FOMO",
+  "colors": {
+    "background_base": "#0A0D0A",
+    "surface_main": "#121A12",
+    "surface_secondary": "#1B241B",
+    "primary": "#22C55E",
+    "primary_hover": "#16A34A",
+    "primary_glow": "rgba(34, 197, 94, 0.4)",
+    "danger": "#EF4444",
+    "danger_hover": "#DC2626",
+    "danger_glow": "rgba(239, 68, 68, 0.6)",
+    "accent_yellow": "#FACC15",
+    "text_primary": "#FFFFFF",
+    "text_secondary": "#9CA3AF",
+    "border_color": "#273227",
+    "border_highlight": "#3A4D3A"
+  },
+  "typography": {
+    "headings": "Bebas Neue",
+    "body": "IBM Plex Sans",
+    "mono": "JetBrains Mono",
+    "rules": {
+      "h1": "text-6xl sm:text-7xl lg:text-[10vw] tracking-tighter leading-none",
+      "h2": "text-4xl sm:text-5xl tracking-tight",
+      "h3": "text-2xl sm:text-3xl tracking-tight",
+      "body": "text-base leading-relaxed",
+      "overline": "text-xs tracking-[0.2em] uppercase"
+    }
+  },
+  "layout": {
+    "spacing_scale": "Use generous padding: p-4 for dense widgets, p-8 to p-12 for major containers.",
+    "border_radius": "rounded-none to rounded-sm (max 4px). Sharp, athletic feel.",
+    "grid_strategy": "Control Room Grid (Dashboard) + Massive Hero Section. Mobile-first grid-cols-1, md:grid-cols-12. Center 8 cols for Timer/Pot, side 4 cols for feeds/actions."
+  },
+  "components": {
+    "surfaces": "Tactical Minimalism. No soft drop shadows. Use 1px solid borders (`border-border_color`). Add 2px inner highlights (`shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]`) for depth.",
+    "hero_timer": "Massive 7-segment or bold sans-serif numbers. When > 60s, it's White/Green glow. When < 60s, transitions to Danger Red, pulsing scale animation.",
+    "buttons": "Heavy, physical feel. 'Shoot' button should be massive, Turf Green or Penalty Red, with a hover effect that deepens the color and intensifies the drop-shadow/glow.",
+    "live_feed": "Scrolling timeline container. Use a subtle gradient 'tracing beam' on the left border to indicate live incoming data.",
+    "glassmorphism": "Avoid muddy glass. Use `bg-surface_main/80 backdrop-blur-xl border-t border-border_highlight` for sticky headers or bottom action bars.",
+    "admin_panel": "Strictly functional, high contrast, clean grid. Separate visual mode (no stadium background, just dark slate `#0F172A` to differentiate from the public game)."
+  },
+  "media": {
+    "images": [
+      {
+        "category": "background",
+        "url": "https://static.prod-images.emergentagent.com/jobs/6f1945dc-50ef-44d7-85e2-ce26ec6c589c/images/a318a6fe25d27d6c21a28b357645b6bf67feb0fa63ffa9f26e892ee8cc279c74.png",
+        "description": "Dark stadium background. MUST use a heavy dark overlay (`bg-background_base/80` or `/90`) so it provides texture without ruining text contrast."
+      },
+      {
+        "category": "decorative_hero",
+        "url": "https://static.prod-images.emergentagent.com/jobs/6f1945dc-50ef-44d7-85e2-ce26ec6c589c/images/48926ab6097ae2b198f24ba91e3a0a5fd1426c979c1e9f6479a023b51824f693.png",
+        "description": "3D Crypto Football. Place near the Pot Size indicator, floating gently with CSS animation (translate-y)."
+      }
+    ]
+  },
+  "features": [
+    "Live countdown timer (5-minute penalty shootout)",
+    "Current pot BNB display (Hero number)",
+    "Last shooter address + timestamp (Highlight prominent)",
+    "Live shots feed timeline (Real-time scrolling)",
+    "Round history leaderboard",
+    "Bot status indicator",
+    "Manual shoot button (Connect wallet, fire shot)",
+    "Game rules section (Bilingual: ZH + EN)",
+    "Admin login + setup wizard (Password protected)",
+    "Admin bot control panel"
+  ],
+  "accessibility": {
+    "contrast": "Ensure all text meets APCA standards. Minimum 4.5:1 for normal text.",
+    "motion": "Respect prefers-reduced-motion media query for pulsing/scrolling.",
+    "testing": "CRITICAL: All interactive elements, buttons, and form inputs MUST include `data-testid` attributes (kebab-case, role-based)."
+  },
+  "instructions_to_main_agent": [
+    "Install required fonts from Google Fonts: Bebas Neue, IBM Plex Sans, JetBrains Mono.",
+    "Avoid generic DeFi purple/cyan. Stick STRICTLY to the World Cup Red/Green turf palette.",
+    "Build the dashboard to feel like a live sports scoreboard - high tension, high urgency.",
+    "For the bilingual rules section, use Shadcn Tabs to toggle between ZH and EN.",
+    "Use Shadcn UI for complex components but strip 'Vercel-like' styles. Replace with sharp, athletic 1px bordered boxes.",
+    "Ensure the layout is highly responsive. The Timer and Pot MUST be immediately visible above the fold on mobile.",
+    "Use Phosphor icons or Lucide for UI iconography (e.g., wallet, timer, bot, history)."
+  ]
+}
