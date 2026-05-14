@@ -305,15 +305,12 @@ class BotManager:
 
                     head = w3.eth.block_number
                     if head > self.last_block:
-                        # 缩小批次 + 留一点 confirmation 缓冲（防止重组）
+                        # batch 500 块，publicnode 支持
                         safe_head = max(0, head - 1)
-                        to_block = min(self.last_block + 50, safe_head)
+                        to_block = min(self.last_block + 500, safe_head)
                         if to_block > self.last_block:
-                            # 1. 扫描 taxToken Transfer 事件识别买家
                             ok1 = await self._scan_transfers(w3, tax_token_addr, self.last_block + 1, to_block)
-                            # 2. 扫描 Vault 自己的事件
                             ok2 = await self._scan_vault_events(w3, vault, self.last_block + 1, to_block)
-                            # 只有两边都成功才推进游标，否则下轮再扫这段
                             if ok1 and ok2:
                                 self.last_block = to_block
 
