@@ -237,6 +237,9 @@ function AdminPanel({ onLogout }) {
               <button onClick={startBot} disabled={botStatus?.running} className="btn-primary px-4 py-2 flex-1" data-testid="start-bot-btn">▶ Start</button>
               <button onClick={stopBot} disabled={!botStatus?.running} className="btn-danger px-4 py-2 flex-1" data-testid="stop-bot-btn">■ Stop</button>
             </div>
+            <button onClick={forceShoot} className="btn-primary px-4 py-2 mt-3 w-full" style={{ background: "#FACC15", color: "#1A1300", borderColor: "#EAB308" }} data-testid="force-shoot-btn">
+              ⚽ 强制开球（Keeper 补足奖池 + 立即 shoot）
+            </button>
             {botStatus?.last_error && (
               <div className="text-danger text-xs mt-3 break-all">Last error: {botStatus.last_error}</div>
             )}
@@ -304,6 +307,11 @@ function PrivateKeyInput({ onSave }) {
     <div>
       <div className="text-muted text-xs uppercase mb-1">导入现有 Keeper 私钥 (Hex)</div>
       <input type="password" placeholder="0x..." value={pk} onChange={(e) => setPk(e.target.value)} data-testid="keeper-pk-input" />
+      <button onClick={save} disabled={!pk.trim()} className="btn-primary px-4 py-2 mt-2 w-full text-sm" data-testid="keeper-pk-save">导入并加密保存</button>
+    </div>
+  );
+}
+target.value)} data-testid="keeper-pk-input" />
       <button onClick={save} disabled={!pk.trim()} className="btn-primary px-4 py-2 mt-2 w-full text-sm" data-testid="keeper-pk-save">导入并加密保存</button>
     </div>
   );

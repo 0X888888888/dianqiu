@@ -340,7 +340,13 @@ class BotManager:
             self.running = False
 
     async def _scan_transfers(self, w3, tax_token: str, from_block: int, to_block: int):
-        """扫 TaxToken Transfer 事件，识别买家（from=pool, to=buyer）"""
+        """扫 TaxToken Transfer 事件，识别真实买家。
+
+        FLAP 内盘购买的 token 路径是多跳的：
+            FLAP Portal → 中间合约 → 真实买家
+        所以不能直接用 Transfer.to 作为买家，需要按 tx 分组后找出
+        '最终接收者'（其 to 没再作为 from 出现）。
+        """
         try:
             logs = w3.eth.get_logs({
                 "fromBlock": hex(from_block),
@@ -350,7 +356,6 @@ class BotManager:
             })
         except Exception as e:
             err = str(e)
-            # 速率限制 — 仅每分钟最多一条日志，避免刷屏
             now = int(time.time())
             if "limit" in err.lower() or "429" in err or "32005" in err:
                 if now - self._last_ratelimit_log > 60:
@@ -360,20 +365,40 @@ class BotManager:
                 await self.log("warn", f"扫 Transfer 失败 [{from_block}-{to_block}]: {err[:120]}")
             return False
 
+        # 按 tx_hash 分组
+        by_tx = {}
         for lg in logs:
             try:
-                from_addr = "0x" + lg["topics"][1].hex()[-40:]
+                txh = lg["transactionHash"].hex() if hasattr(lg["transactionHash"], "hex") else str(lg["transactionHash"])
+                fr_addr = "0x" + lg["topics"][1].hex()[-40:]
                 to_addr = "0x" + lg["topics"][2].hex()[-40:]
-                # 买入识别：from 是 BondingCurve/Pair（非零地址）, to 是真实买家（非零、非销毁）
-                if (int(to_addr, 16) != 0
-                    and to_addr.lower() != "0x000000000000000000000000000000000000dead"
-                    and int(from_addr, 16) != 0):
-                    self.last_buyers[Web3.to_checksum_address(to_addr)] = int(time.time())
+                by_tx.setdefault(txh, []).append((fr_addr.lower(), to_addr.lower()))
             except Exception:
                 continue
 
-        # 清理 60s 以上的旧记录
-        cutoff = int(time.time()) - 60
+        new_buyers_count = 0
+        for txh, transfers in by_tx.items():
+            # 找该 tx 内所有作为 from 出现过的地址
+            froms = {fr for fr, _ in transfers}
+            # 真实买家 = 作为 to 但从未作为 from（即代币流的终点）
+            finals = []
+            for _, to_addr in transfers:
+                if (to_addr not in froms
+                    and int(to_addr, 16) != 0
+                    and to_addr != "0x000000000000000000000000000000000000dead"
+                    and to_addr != tax_token.lower()):
+                    finals.append(to_addr)
+            if finals:
+                # 取最后一个（最终的最终）
+                real_buyer = Web3.to_checksum_address(finals[-1])
+                self.last_buyers[real_buyer] = int(time.time())
+                new_buyers_count += 1
+
+        if new_buyers_count > 0:
+            await self.log("info", f"🎯 扫到 {new_buyers_count} 笔买入 [{from_block}-{to_block}]，最新买家={list(self.last_buyers.keys())[-1][:10]}...")
+
+        # 清理 90s 以上的旧记录
+        cutoff = int(time.time()) - 90
         self.last_buyers = {a: t for a, t in self.last_buyers.items() if t > cutoff}
         return True
 
@@ -701,6 +726,76 @@ async def rewind_bot(blocks: int = 500, _=Depends(verify_jwt)):
 async def bot_logs(limit: int = 100, _=Depends(verify_jwt)):
     docs = await col_bot_logs.find({}, {"_id": 0}).sort([("timestamp", -1)]).limit(limit).to_list(length=limit)
     return docs
+
+@api.post("/admin/force-shoot")
+async def force_shoot(player: Optional[str] = None, _=Depends(verify_jwt)):
+    """强制触发一次 shoot：若奖池差额不足 minShotValue，Keeper 自动转 BNB 补足，然后立即 shoot。
+    用途：测试游戏流程 / 项目方手动开球 / 跨过 FLAP 税收稀释问题。"""
+    cfg = await get_config()
+    if not cfg.vault_address or not cfg.keeper_private_key_encrypted:
+        raise HTTPException(400, detail="not_configured")
+    try:
+        w3 = Web3(Web3.HTTPProvider(cfg.rpc_url))
+        w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+        vault_addr = Web3.to_checksum_address(cfg.vault_address)
+        vault = w3.eth.contract(address=vault_addr, abi=VAULT_ABI)
+
+        current_pot = vault.functions.currentPot().call()
+        last_mark = vault.functions.lastShotPotMark().call()
+        min_shot = vault.functions.minShotValue().call()
+        new_amount = current_pot - last_mark
+
+        priv = decrypt_str(cfg.keeper_private_key_encrypted)
+        acct = Account.from_key(priv)
+
+        # 默认 player = 最近一个买家；没有就 = keeper 地址
+        if player:
+            target = Web3.to_checksum_address(player)
+        elif bot_manager.last_buyers:
+            target = max(bot_manager.last_buyers.items(), key=lambda kv: kv[1])[0]
+        else:
+            target = acct.address
+
+        result = {"player": target, "new_amount_before": str(new_amount), "min_shot": str(min_shot)}
+
+        # 如果差额不够，先从 keeper 转 BNB 给 vault 补足
+        # 佣金最高 6%（税率≤1% 时），所以补 (shortfall / 0.94) + buffer 才稳妥
+        if new_amount < min_shot:
+            base_shortfall = min_shot - new_amount
+            # 留 20% buffer 覆盖佣金 + 安全余量
+            shortfall = (base_shortfall * 120) // 100 + 10000
+            result["topup_wei"] = str(shortfall)
+            tx = {
+                "to": vault_addr,
+                "value": shortfall,
+                "nonce": w3.eth.get_transaction_count(acct.address),
+                "gas": 100000,
+                "gasPrice": w3.eth.gas_price,
+                "chainId": cfg.chain_id,
+            }
+            signed = acct.sign_transaction(tx)
+            txh = w3.eth.send_raw_transaction(signed.raw_transaction)
+            result["topup_tx"] = txh.hex() if hasattr(txh, "hex") else str(txh)
+            await bot_manager.log("info", f"💰 Keeper 转 {shortfall} wei 给 vault 凑门槛, tx={result['topup_tx']}")
+            # 等待 receipt 确认入账
+            w3.eth.wait_for_transaction_receipt(txh, timeout=60)
+
+        # 调 shoot
+        tx = vault.functions.shoot(target).build_transaction({
+            "from": acct.address,
+            "nonce": w3.eth.get_transaction_count(acct.address),
+            "gas": 1500000,
+            "gasPrice": int(w3.eth.gas_price * 1.5),  # 1.5x 加价抢跑 MEV
+            "chainId": cfg.chain_id,
+        })
+        signed = acct.sign_transaction(tx)
+        txh = w3.eth.send_raw_transaction(signed.raw_transaction)
+        result["shoot_tx"] = txh.hex() if hasattr(txh, "hex") else str(txh)
+        await bot_manager.log("info", f"⚽ Force-shoot for {target[:10]}..., tx={result['shoot_tx']}")
+        return result
+    except Exception as e:
+        raise HTTPException(500, detail=f"force-shoot failed: {str(e)[:200]}")
+
 
 @api.post("/admin/manual-shoot")
 async def manual_shoot(player: str, _=Depends(verify_jwt)):
