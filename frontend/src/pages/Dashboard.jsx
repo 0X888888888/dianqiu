@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { api, fmtBnb, fmtAddr, fmtTimer, fmtRelativeTime, openWebSocket, explorerUrl } from "../lib/api";
+import PlayPanel from "../components/PlayPanel";
 
 export default function Dashboard() {
   const [state, setState] = useState(null);
@@ -152,11 +153,18 @@ export default function Dashboard() {
           </div>
         </section>
 
-        {/* Feed + History */}
+        {/* Play CTA + Feed + History */}
         <section className="max-w-7xl mx-auto px-4 pb-12">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <ShotsFeed shots={shots} chainId={state?.chain_id} />
-            <RoundsLeaderboard rounds={rounds} chainId={state?.chain_id} />
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-1">
+              <PlayPanel state={state} />
+            </div>
+            <div className="lg:col-span-1">
+              <ShotsFeed shots={shots} chainId={state?.chain_id} />
+            </div>
+            <div className="lg:col-span-1">
+              <RoundsLeaderboard rounds={rounds} chainId={state?.chain_id} />
+            </div>
           </div>
         </section>
 
