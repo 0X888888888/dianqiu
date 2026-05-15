@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { api, fmtBnb, fmtAddr, fmtTimer, fmtRelativeTime, openWebSocket, explorerUrl } from "../lib/api";
 import PlayPanel from "../components/PlayPanel";
 
@@ -246,32 +247,94 @@ function Podium({ topShooters, pot, chainId }) {
   const zero = "0x0000000000000000000000000000000000000000";
   const slots = [0, 1, 2].map((i) => (topShooters && topShooters[i]) || zero);
   const labels = [
-    { rank: "🥇 1st", bps: 4000, color: "text-accent", glow: "border-accent" },
-    { rank: "🥈 2nd", bps: 2400, color: "text-white", glow: "border-white/30" },
-    { rank: "🥉 3rd", bps: 1600, color: "text-white opacity-80", glow: "border-white/15" },
+    { rank: "🥇 1st", medal: "🥇", bps: 4000, color: "text-accent", glow: "border-accent", shadow: "shadow-[0_0_24px_rgba(250,204,21,0.35)]" },
+    { rank: "🥈 2nd", medal: "🥈", bps: 2400, color: "text-white", glow: "border-white/30", shadow: "" },
+    { rank: "🥉 3rd", medal: "🥉", bps: 1600, color: "text-white opacity-80", glow: "border-white/15", shadow: "" },
   ];
   const potBig = (() => { try { return BigInt(pot || "0"); } catch { return 0n; } })();
+
+  // 检测第一名变化以触发 "GOAL!" 闪光
+  const prevFirstRef = useRef(slots[0]);
+  const [flashGoal, setFlashGoal] = useState(false);
+  useEffect(() => {
+    if (slots[0] !== zero && slots[0] !== prevFirstRef.current && prevFirstRef.current !== undefined) {
+      setFlashGoal(true);
+      const t = setTimeout(() => setFlashGoal(false), 1400);
+      return () => clearTimeout(t);
+    }
+    prevFirstRef.current = slots[0];
+  }, [slots[0]]);
+
   return (
-    <div className="grid grid-cols-3 gap-3" data-testid="podium">
-      {slots.map((addr, i) => {
-        const empty = addr === zero || !addr;
-        const prizeWei = (potBig * BigInt(labels[i].bps)) / 10000n;
-        return (
-          <div key={i} className={`panel-bright p-3 text-center border-l-4 ${labels[i].glow}`} data-testid={`podium-slot-${i}`}>
-            <div className="text-muted text-xs">{labels[i].rank}</div>
-            {empty ? (
-              <div className="font-mono text-sm text-muted py-2">— 空缺 —</div>
-            ) : (
-              <a href={explorerUrl(chainId, "address", addr)} target="_blank" rel="noreferrer" className={`font-mono text-sm ${labels[i].color} hover:text-primary block py-1`}>
-                {fmtAddr(addr)}
-              </a>
-            )}
-            <div className="text-muted text-xs mt-1">
-              {empty ? "0.0000" : fmtBnb(prizeWei.toString(), 4)} BNB
+    <div className="relative" data-testid="podium">
+      <AnimatePresence>
+        {flashGoal && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.5 }}
+            animate={{ opacity: 1, scale: 1.05 }}
+            exit={{ opacity: 0, scale: 1.2 }}
+            transition={{ duration: 0.4, ease: "easeOut" }}
+            className="absolute inset-0 flex items-center justify-center pointer-events-none z-20"
+            data-testid="goal-flash"
+          >
+            <div className="font-display text-7xl md:text-9xl text-accent drop-shadow-[0_0_30px_rgba(250,204,21,0.8)] timer-glow-green">
+              ⚽ GOAL!
             </div>
-          </div>
-        );
-      })}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <div className="grid grid-cols-3 gap-3 relative z-10">
+        <AnimatePresence mode="popLayout" initial={false}>
+          {slots.map((addr, i) => {
+            const empty = addr === zero || !addr;
+            const prizeWei = (potBig * BigInt(labels[i].bps)) / 10000n;
+            // key 用 address — 同一玩家在槽位间移动时 framer-motion 平滑滑动
+            const motionKey = empty ? `empty-${i}` : `addr-${addr}`;
+            return (
+              <motion.div
+                key={motionKey}
+                layout
+                initial={{ opacity: 0, y: -28, scale: 0.82, rotateX: -45 }}
+                animate={{ opacity: 1, y: 0, scale: 1, rotateX: 0 }}
+                exit={{ opacity: 0, y: 28, scale: 0.82, rotateX: 45 }}
+                transition={{ type: "spring", stiffness: 320, damping: 26, mass: 0.6 }}
+                className={`panel-bright p-3 text-center border-l-4 ${labels[i].glow} ${i === 0 && !empty ? labels[0].shadow : ""}`}
+                data-testid={`podium-slot-${i}`}
+                style={{ transformPerspective: 800 }}
+              >
+                <div className="flex items-center justify-center gap-1 text-muted text-xs">
+                  <motion.span
+                    animate={i === 0 && !empty ? { scale: [1, 1.25, 1], rotate: [0, -10, 10, 0] } : { scale: 1 }}
+                    transition={{ duration: 1.2, repeat: i === 0 && !empty ? Infinity : 0, repeatDelay: 2 }}
+                  >
+                    {labels[i].medal}
+                  </motion.span>
+                  <span>{labels[i].rank.replace(labels[i].medal, "").trim()}</span>
+                </div>
+                {empty ? (
+                  <div className="font-mono text-sm text-muted py-2">— 空缺 —</div>
+                ) : (
+                  <motion.a
+                    href={explorerUrl(chainId, "address", addr)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className={`font-mono text-sm ${labels[i].color} hover:text-primary block py-1`}
+                    initial={{ filter: "brightness(2)" }}
+                    animate={{ filter: "brightness(1)" }}
+                    transition={{ duration: 0.8 }}
+                  >
+                    {fmtAddr(addr)}
+                  </motion.a>
+                )}
+                <div className="text-muted text-xs mt-1">
+                  {empty ? "0.0000" : fmtBnb(prizeWei.toString(), 4)} BNB
+                </div>
+              </motion.div>
+            );
+          })}
+        </AnimatePresence>
+      </div>
     </div>
   );
 }
