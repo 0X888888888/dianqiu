@@ -50,11 +50,17 @@ contract PenaltyShootoutVault is VaultBaseV2 {
     // 常量
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @notice 赢家分成比例（基点，10000 = 100%）
-    uint256 public constant WINNER_BPS = 8000; // 80%
+    /// @notice Top-3 三甲领奖台奖金分配（基点，10000 = 100%）
+    /// @dev    80% 奖金池按 50/30/20 拆给前三名 → 40%/24%/16% of pot；20% 滚入下一轮
+    uint256 public constant FIRST_BPS  = 4000; // 第 1 名 40%
+    uint256 public constant SECOND_BPS = 2400; // 第 2 名 24%
+    uint256 public constant THIRD_BPS  = 1600; // 第 3 名 16%
 
-    /// @notice 滚入下一轮比例
+    /// @notice 滚入下一轮比例（不足 3 个有效赢家时多余份额也并入此项）
     uint256 public constant CARRYOVER_BPS = 2000; // 20%
+
+    /// @notice 领奖台名额数
+    uint256 public constant PODIUM_SIZE = 3;
 
     /// @notice Keeper 激励上限（防滥用）
     uint256 public constant MAX_KEEPER_FEE_BPS = 100; // 1%
@@ -104,8 +110,12 @@ contract PenaltyShootoutVault is VaultBaseV2 {
     /// @notice 当前轮奖池（已扣佣金、已扣 keeper 激励的净额）
     uint256 public currentPot;
 
-    /// @notice 当前轮最后射门者
-    address public lastShooter;
+    /// @notice 当前轮领奖台（最近 3 位有效射门者）
+    /// @dev    topShooters[0] = 最后射门者（第 1 名）
+    ///         topShooters[1] = 倒数第二
+    ///         topShooters[2] = 倒数第三
+    ///         同一玩家连续射门会被去重，只占一个名额（保留最高位置）
+    address[3] public topShooters;
 
     /// @notice 当前轮射门次数
     uint256 public shotCount;
@@ -116,8 +126,8 @@ contract PenaltyShootoutVault is VaultBaseV2 {
     /// @notice 历史轮次记录
     struct Round {
         uint256 roundId;
-        address winner;
-        uint256 prize;
+        address[3] winners;   // 三甲（可能含 address(0) 表示该位空缺）
+        uint256[3] prizes;    // 对应的奖金 wei
         uint256 settledAt;
         uint256 totalShots;
     }
@@ -148,8 +158,12 @@ contract PenaltyShootoutVault is VaultBaseV2 {
 
     event GoalScored(
         uint256 indexed round,
-        address indexed winner,
-        uint256 prize,
+        address indexed firstWinner,
+        uint256 firstPrize,
+        address secondWinner,
+        uint256 secondPrize,
+        address thirdWinner,
+        uint256 thirdPrize,
         uint256 carriedOver,
         uint256 totalShots
     );
@@ -279,7 +293,7 @@ contract PenaltyShootoutVault is VaultBaseV2 {
         if (player == address(0)) revert InvalidPlayer();
 
         // 如果上一轮可以结算了，先自动结算
-        if (deadline != 0 && block.timestamp >= deadline && lastShooter != address(0)) {
+        if (deadline != 0 && block.timestamp >= deadline && topShooters[0] != address(0)) {
             _settleRoundInternal();
         }
 
@@ -298,8 +312,8 @@ contract PenaltyShootoutVault is VaultBaseV2 {
         // 更新快照（扣 keeper 后）
         lastShotPotMark = currentPot;
 
-        // ✅ 有效射门：记录 + 重置倒计时
-        lastShooter = player;
+        // ✅ 有效射门：领奖台轮转 + 重置倒计时
+        _promoteShooter(player);
         deadline = block.timestamp + shotWindow;
         shotCount += 1;
 
@@ -353,7 +367,7 @@ contract PenaltyShootoutVault is VaultBaseV2 {
     function _shootInternal(address player) internal {
         if (player == address(0)) revert InvalidPlayer();
 
-        if (deadline != 0 && block.timestamp >= deadline && lastShooter != address(0)) {
+        if (deadline != 0 && block.timestamp >= deadline && topShooters[0] != address(0)) {
             _settleRoundInternal();
         }
 
@@ -375,7 +389,7 @@ contract PenaltyShootoutVault is VaultBaseV2 {
             revert NoTaxDispatched();
         }
 
-        lastShooter = player;
+        _promoteShooter(player);
         deadline = block.timestamp + shotWindow;
         shotCount += 1;
 
@@ -392,53 +406,116 @@ contract PenaltyShootoutVault is VaultBaseV2 {
         emit ShotFired(currentRound, player, netToShot, deadline, currentPot, shotCount);
     }
 
+    /// @dev 领奖台轮转：
+    /// - 若 player == topShooters[0]：无变化（同一玩家连续射门，仍占第 1）
+    /// - 若 player 在 [1] 或 [2]：晋升到 [0]，被挤出的位置由 [0] 接力（即位置交换/上移）
+    /// - 若 player 为新人：所有人下沉一位，原 [2] 出局
+    function _promoteShooter(address player) internal {
+        if (topShooters[0] == player) {
+            return; // 已是第 1，不动
+        }
+        if (topShooters[1] == player) {
+            // [b,p,c] -> [p,b,c]
+            topShooters[1] = topShooters[0];
+            topShooters[0] = player;
+            return;
+        }
+        if (topShooters[2] == player) {
+            // [a,b,p] -> [p,a,b]
+            topShooters[2] = topShooters[1];
+            topShooters[1] = topShooters[0];
+            topShooters[0] = player;
+            return;
+        }
+        // 新玩家：整体下移
+        topShooters[2] = topShooters[1];
+        topShooters[1] = topShooters[0];
+        topShooters[0] = player;
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // 核心：settleRound —— 比赛结束结算
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// @notice 倒计时归零后，任何人可调用此方法触发结算
     function settleRound() external nonReentrant {
-        if (lastShooter == address(0)) revert NoShotsYet();
+        if (topShooters[0] == address(0)) revert NoShotsYet();
         if (block.timestamp < deadline) {
             revert RoundStillActive(deadline - block.timestamp);
         }
         _settleRoundInternal();
     }
 
-    /// @dev 实际结算逻辑
+    /// @dev 实际结算逻辑（Top-3 领奖台分配 40/24/16，剩余 20%+空位入下一轮）
     function _settleRoundInternal() internal {
-        address winner = lastShooter;
+        address[3] memory winners = topShooters;
         uint256 pot = currentPot;
-        uint256 prize = (pot * WINNER_BPS) / 10000;
-        uint256 carryOver = pot - prize; // 自动等于 20%
+        uint256[3] memory prizes;
+        uint256 totalPaid;
+
+        if (winners[0] != address(0)) {
+            prizes[0] = (pot * FIRST_BPS) / 10000;
+            totalPaid += prizes[0];
+        }
+        if (winners[1] != address(0)) {
+            prizes[1] = (pot * SECOND_BPS) / 10000;
+            totalPaid += prizes[1];
+        }
+        if (winners[2] != address(0)) {
+            prizes[2] = (pot * THIRD_BPS) / 10000;
+            totalPaid += prizes[2];
+        }
+
+        uint256 carryOver = pot - totalPaid; // 含 20% + 任意空位的奖金
 
         // 记录历史
         rounds.push(Round({
             roundId: currentRound,
-            winner: winner,
-            prize: prize,
+            winners: winners,
+            prizes: prizes,
             settledAt: block.timestamp,
             totalShots: shotCount
         }));
 
-        emit GoalScored(currentRound, winner, prize, carryOver, shotCount);
+        emit GoalScored(
+            currentRound,
+            winners[0], prizes[0],
+            winners[1], prizes[1],
+            winners[2], prizes[2],
+            carryOver,
+            shotCount
+        );
 
         // 重置状态准备下一轮
         currentRound += 1;
         currentPot = carryOver;
-        lastShotPotMark = carryOver;  // 滚入的 BNB 算作下一轮起始基线
-        lastShooter = address(0);
+        lastShotPotMark = carryOver;
+        topShooters[0] = address(0);
+        topShooters[1] = address(0);
+        topShooters[2] = address(0);
         deadline = 0;
         shotCount = 0;
 
         // 发奖（失败转 pending）
-        if (prize > 0) {
-            (bool ok, ) = winner.call{value: prize, gas: 50000}("");
-            if (!ok) {
-                pendingWithdrawals[winner] += prize;
-                emit PendingPayout(winner, prize, "winner transfer failed");
+        for (uint256 i = 0; i < PODIUM_SIZE; ++i) {
+            if (prizes[i] > 0 && winners[i] != address(0)) {
+                (bool ok, ) = winners[i].call{value: prizes[i], gas: 50000}("");
+                if (!ok) {
+                    pendingWithdrawals[winners[i]] += prizes[i];
+                    emit PendingPayout(winners[i], prizes[i], "winner transfer failed");
+                }
             }
         }
+    }
+
+    /// @notice 当前轮最后射门者（向后兼容的简便视图）
+    function lastShooter() external view returns (address) {
+        return topShooters[0];
+    }
+
+    /// @notice 当前轮领奖台（三甲）一次性返回
+    function currentPodium() external view returns (address[3] memory) {
+        return topShooters;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -535,17 +612,19 @@ contract PenaltyShootoutVault is VaultBaseV2 {
     function description() public view override returns (string memory) {
         return string(
             abi.encodePacked(
-                unicode"⚽ 点球大战金库 / Penalty Shootout Vault\n",
+                unicode"⚽ 点球大战金库 / Penalty Shootout Vault (Top-3 Podium)\n",
                 unicode"玩法：每次调用 shoot(player) 即可"
                 unicode"射门"
-                unicode"，5 分钟内无人射门则最后射门者获得奖池 80%，剩余 20% 滚入下一轮。\n",
+                unicode"，5 分钟内无人射门则前三名射门者瓜分奖池：第1名40% · 第2名24% · 第3名16%，剩余20%滚入下一轮。\n",
                 unicode"Rules: Call shoot(player) to score. ",
                 unicode"If no shot in ", _uint2str(shotWindow), unicode" seconds, ",
-                unicode"the last shooter wins 80% of the pot, 20% rolls into the next round.\n",
+                unicode"top-3 last shooters share the pot 40/24/16 (%), with 20% rolling into the next round.\n",
                 unicode"当前轮 / Round: #", _uint2str(currentRound),
                 unicode" | 奖池 / Pot: ", _weiToBnbStr(currentPot), unicode" BNB",
                 unicode" | 倒计时 / Countdown: ", _uint2str(timeRemaining()), unicode" s",
-                unicode" | 最后射门 / LastShooter: ", _addr2str(lastShooter), "\n",
+                unicode" | 第1 / 1st: ", _addr2str(topShooters[0]), "\n",
+                unicode"第2 / 2nd: ", _addr2str(topShooters[1]),
+                unicode" | 第3 / 3rd: ", _addr2str(topShooters[2]), "\n",
                 unicode"佣金 / Commission: 税率≤1% 收 6% | 税率>1% 收 6/taxRateBps",
                 unicode" | Keeper 激励 / Keeper Fee: ", _uint2str(keeperFeeBps), unicode" bps\n",
                 unicode"⚠ tx.origin / msg.sender 归属由调用者显式传入 player，"
@@ -557,10 +636,10 @@ contract PenaltyShootoutVault is VaultBaseV2 {
     /// @notice 自动 UI 渲染 schema (Flap V2.1)
     function vaultUISchema() public pure override returns (VaultUISchema memory schema) {
         schema.vaultType = "PenaltyShootoutVault";
-        schema.description = unicode"⚽ 世界杯点球大战金库 / FOMO Penalty Shootout — "
-            unicode"购买 taxToken 后调用 shoot(player) 宣告射门，5 分钟无新射门则最后射门者赢得奖池 80%。 / "
+        schema.description = unicode"⚽ 世界杯点球大战金库 (Top-3 领奖台) / FOMO Penalty Shootout — "
+            unicode"购买 taxToken 后调用 shoot(player) 宣告射门，5 分钟无新射门则前三名瓜分奖池 40/24/16%。 / "
             unicode"After buying taxToken, call shoot(player) to score. "
-            unicode"If no shots for 5 minutes, last shooter wins 80% of the pot.";
+            unicode"If no shots for 5 minutes, top-3 last shooters share 40/24/16 of the pot.";
 
         schema.methods = new VaultMethodSchema[](9);
 
@@ -588,12 +667,12 @@ contract PenaltyShootoutVault is VaultBaseV2 {
         schema.methods[2].outputs[0] = FieldDescriptor("seconds", "uint256", "Seconds left", 0);
         schema.methods[2].approvals = new ApproveAction[](0);
 
-        // ─── View: lastShooter ───
+        // ─── View: lastShooter (alias of topShooters[0]) ───
         schema.methods[3].name = "lastShooter";
-        schema.methods[3].description = unicode"当前轮最后射门者 / Last shooter of current round.";
+        schema.methods[3].description = unicode"当前轮第 1 名（最后射门者）/ Current round leader (top 1).";
         schema.methods[3].inputs = new FieldDescriptor[](0);
         schema.methods[3].outputs = new FieldDescriptor[](1);
-        schema.methods[3].outputs[0] = FieldDescriptor("player", "address", "Last shooter address", 0);
+        schema.methods[3].outputs[0] = FieldDescriptor("player", "address", "Top-1 shooter address", 0);
         schema.methods[3].approvals = new ApproveAction[](0);
 
         // ─── View: shotCount ───

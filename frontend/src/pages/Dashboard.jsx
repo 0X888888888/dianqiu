@@ -125,7 +125,7 @@ export default function Dashboard() {
 
               <div className="text-center text-muted text-sm md:text-base mt-4">
                 {localTimer > 0
-                  ? <>倒计时归零 → 最后射门者赢得奖池 80% / Last shooter wins 80% when timer hits zero</>
+                  ? <>倒计时归零 → 三甲瓜分奖池 40/24/16% / Top-3 share the pot 40/24/16% at zero</>
                   : (state?.last_shooter && state?.last_shooter !== "0x0000000000000000000000000000000000000000"
                       ? <>⚽ 比赛可结算 / Ready to settle</>
                       : <>🟢 等待开球 / Waiting for kickoff</>)}
@@ -133,8 +133,10 @@ export default function Dashboard() {
 
               <div className="scoreboard-divider my-6"></div>
 
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-center">
-                <Stat label="🎯 最后射门者" value={fmtAddr(state?.last_shooter)} testid="last-shooter" link={state?.last_shooter && state?.last_shooter !== "0x0000000000000000000000000000000000000000" ? explorerUrl(state?.chain_id, "address", state?.last_shooter) : null} />
+              {/* Top-3 领奖台 */}
+              <Podium topShooters={state?.top_shooters} pot={state?.current_pot_wei} chainId={state?.chain_id} />
+
+              <div className="grid grid-cols-2 md:grid-cols-2 gap-4 text-center mt-6">
                 <Stat label="📊 本轮射门" value={state?.shot_count ?? 0} testid="shot-count" />
                 <Stat label="💰 未派税" value={`${fmtBnb(state?.pending_tax_in_processor_wei ?? "0", 4)}`} unit="BNB" testid="pending-tax" />
               </div>
@@ -148,14 +150,22 @@ export default function Dashboard() {
               </div>
               <div className="font-display text-2xl text-muted mt-1">BNB</div>
               <div className="scoreboard-divider w-full my-5"></div>
-              <div className="grid grid-cols-2 gap-3 w-full text-center">
+              <div className="grid grid-cols-4 gap-2 w-full text-center">
                 <div>
-                  <div className="text-muted text-xs">🏆 赢家分成</div>
-                  <div className="font-display text-2xl text-accent">80%</div>
+                  <div className="text-muted text-xs">🥇 1st</div>
+                  <div className="font-display text-xl text-accent">40%</div>
                 </div>
                 <div>
-                  <div className="text-muted text-xs">🔁 滚下一轮</div>
-                  <div className="font-display text-2xl text-muted">20%</div>
+                  <div className="text-muted text-xs">🥈 2nd</div>
+                  <div className="font-display text-xl text-white">24%</div>
+                </div>
+                <div>
+                  <div className="text-muted text-xs">🥉 3rd</div>
+                  <div className="font-display text-xl text-white opacity-80">16%</div>
+                </div>
+                <div>
+                  <div className="text-muted text-xs">🔁 滚动</div>
+                  <div className="font-display text-xl text-muted">20%</div>
                 </div>
               </div>
             </div>
@@ -230,6 +240,40 @@ function Stat({ label, value, unit, testid, link }) {
     return <a href={link} target="_blank" rel="noreferrer" className="hover:text-primary transition-colors">{content}</a>;
   }
   return <div>{content}</div>;
+}
+
+function Podium({ topShooters, pot, chainId }) {
+  const zero = "0x0000000000000000000000000000000000000000";
+  const slots = [0, 1, 2].map((i) => (topShooters && topShooters[i]) || zero);
+  const labels = [
+    { rank: "🥇 1st", bps: 4000, color: "text-accent", glow: "border-accent" },
+    { rank: "🥈 2nd", bps: 2400, color: "text-white", glow: "border-white/30" },
+    { rank: "🥉 3rd", bps: 1600, color: "text-white opacity-80", glow: "border-white/15" },
+  ];
+  const potBig = (() => { try { return BigInt(pot || "0"); } catch { return 0n; } })();
+  return (
+    <div className="grid grid-cols-3 gap-3" data-testid="podium">
+      {slots.map((addr, i) => {
+        const empty = addr === zero || !addr;
+        const prizeWei = (potBig * BigInt(labels[i].bps)) / 10000n;
+        return (
+          <div key={i} className={`panel-bright p-3 text-center border-l-4 ${labels[i].glow}`} data-testid={`podium-slot-${i}`}>
+            <div className="text-muted text-xs">{labels[i].rank}</div>
+            {empty ? (
+              <div className="font-mono text-sm text-muted py-2">— 空缺 —</div>
+            ) : (
+              <a href={explorerUrl(chainId, "address", addr)} target="_blank" rel="noreferrer" className={`font-mono text-sm ${labels[i].color} hover:text-primary block py-1`}>
+                {fmtAddr(addr)}
+              </a>
+            )}
+            <div className="text-muted text-xs mt-1">
+              {empty ? "0.0000" : fmtBnb(prizeWei.toString(), 4)} BNB
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function LowTaxFeed({ lowTax, minShotWei, chainId }) {
@@ -308,21 +352,36 @@ function RoundsLeaderboard({ rounds, chainId }) {
       <div className="max-h-[420px] overflow-y-auto space-y-2 pr-1">
         {rounds.length === 0 ? (
           <div className="text-muted text-center py-12">暂无冠军 / No champions yet</div>
-        ) : rounds.map((r, i) => (
-          <div key={r.round_id} className="flex items-center gap-3 panel-bright p-3" data-testid={`round-row-${i}`}>
-            <div className="font-display text-3xl text-accent w-16 text-center">#{r.round_id}</div>
-            <div className="flex-1 min-w-0">
-              <a href={explorerUrl(chainId, "address", r.winner)} target="_blank" rel="noreferrer" className="font-mono text-sm text-white hover:text-primary truncate block">
-                🏆 {fmtAddr(r.winner)}
-              </a>
-              <div className="text-muted text-xs">{r.total_shots} shots · {fmtRelativeTime(r.settled_at)}</div>
+        ) : rounds.map((r, i) => {
+          const winners = (r.winners && r.winners.length ? r.winners : [r.winner, null, null]).slice(0, 3);
+          const prizes = (r.prizes_wei && r.prizes_wei.length ? r.prizes_wei : [r.prize_wei || "0", "0", "0"]).slice(0, 3);
+          const totalPrize = prizes.reduce((acc, p) => acc + BigInt(p || "0"), 0n);
+          return (
+            <div key={r.round_id} className="panel-bright p-3 space-y-1" data-testid={`round-row-${i}`}>
+              <div className="flex items-center gap-3 mb-1">
+                <div className="font-display text-2xl text-accent w-12 text-center">#{r.round_id}</div>
+                <div className="flex-1 text-muted text-xs">{r.total_shots} shots · {fmtRelativeTime(r.settled_at)}</div>
+                <div className="text-right">
+                  <div className="font-display text-lg text-primary">{fmtBnb(totalPrize.toString(), 4)}</div>
+                  <div className="text-muted text-xs">BNB</div>
+                </div>
+              </div>
+              {[0, 1, 2].map((k) => {
+                const w = winners[k];
+                const p = prizes[k] || "0";
+                if (!w || w === "0x0000000000000000000000000000000000000000" || BigInt(p) === 0n) return null;
+                const medal = ["🥇", "🥈", "🥉"][k];
+                return (
+                  <div key={k} className="flex items-center gap-2 text-xs">
+                    <span>{medal}</span>
+                    <a href={explorerUrl(chainId, "address", w)} target="_blank" rel="noreferrer" className="font-mono text-white hover:text-primary flex-1 truncate">{fmtAddr(w)}</a>
+                    <span className="text-primary font-display">{fmtBnb(p, 4)}</span>
+                  </div>
+                );
+              })}
             </div>
-            <div className="text-right">
-              <div className="font-display text-xl text-primary">{fmtBnb(r.prize_wei, 4)}</div>
-              <div className="text-muted text-xs">BNB</div>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -344,8 +403,10 @@ function Rules({ vault, taxToken, chainId }) {
         {lang === "zh" ? (
           <div className="space-y-3 text-muted text-sm md:text-base leading-relaxed">
             <p>⚽ <b className="text-white">这是一场永不停止的世界杯点球大战</b>。每次有人在 Flap 内盘购买代币，监听 Bot 自动识别买家身份并触发"射门"，重置 5 分钟倒计时。</p>
-            <p>⏱ <b className="text-white">5 分钟内无人射门</b> → 比赛结束 → 最后射门者获得 <span className="text-primary font-bold">80%</span> 奖池！</p>
-            <p>🔁 剩余 <span className="text-accent font-bold">20%</span> 自动滚入下一轮，作为下一回合的起始奖池。</p>
+            <p>⏱ <b className="text-white">5 分钟内无人射门</b> → 比赛结束 → 最近三位有效射门者瓜分奖池！</p>
+            <p>🏆 <b className="text-white">三甲领奖台分成</b>：第一名 <span className="text-primary font-bold">40%</span> · 第二名 <span className="text-accent font-bold">24%</span> · 第三名 <span className="text-white font-bold">16%</span>，合计 <b>80%</b>。</p>
+            <p>🔁 剩余 <span className="text-muted font-bold">20%</span> 自动滚入下一轮（若某领奖台空缺，其份额也并入此项）。</p>
+            <p>🤝 <b className="text-white">去重规则</b>：同一玩家连续射门只占一个名额，最高位置保留。</p>
             <p>💰 <b className="text-white">奖池增长方式</b>：每一次交易都会向金库支付税收（佣金后净额），金库越火，奖池越大。</p>
             <p>🤖 <b className="text-white">Bot 自动化</b>：网页后台 7×24 监听链上 Transfer 事件，识别真实买家并代为 shoot，您只需正常买代币即可参与。</p>
             <p>🎯 <b className="text-white">手动模式</b>：钱包用户也可连接钱包直接调用 <code className="font-mono text-primary">vault.buyAndShoot()</code> 一键参与，无需 Bot。</p>
@@ -353,8 +414,10 @@ function Rules({ vault, taxToken, chainId }) {
         ) : (
           <div className="space-y-3 text-muted text-sm md:text-base leading-relaxed">
             <p>⚽ <b className="text-white">A never-ending World Cup penalty shootout</b>. Each buy on Flap triggers a "shot" — the bot identifies the real buyer and resets the 5-minute timer.</p>
-            <p>⏱ <b className="text-white">No shots for 5 minutes</b> → match ends → last shooter takes <span className="text-primary font-bold">80%</span> of the pot!</p>
-            <p>🔁 Remaining <span className="text-accent font-bold">20%</span> rolls over to seed the next round.</p>
+            <p>⏱ <b className="text-white">No shots for 5 minutes</b> → match ends → top-3 last shooters share the pot!</p>
+            <p>🏆 <b className="text-white">Top-3 podium split</b>: 1st <span className="text-primary font-bold">40%</span> · 2nd <span className="text-accent font-bold">24%</span> · 3rd <span className="text-white font-bold">16%</span> (total <b>80%</b>).</p>
+            <p>🔁 Remaining <span className="text-muted font-bold">20%</span> rolls over to the next round (empty podium slots also roll over).</p>
+            <p>🤝 <b className="text-white">Dedup rule</b>: Same player shooting consecutively occupies only one podium slot (highest tier kept).</p>
             <p>💰 <b className="text-white">Growing pot</b>: every trade pays tax to the vault (minus commission). More activity = bigger jackpot.</p>
             <p>🤖 <b className="text-white">Bot automation</b>: 24/7 listener watches on-chain Transfer events, identifies real buyers, and calls shoot() on their behalf.</p>
             <p>🎯 <b className="text-white">Manual mode</b>: Connect wallet and call <code className="font-mono text-primary">vault.buyAndShoot()</code> for one-click participation, no bot required.</p>

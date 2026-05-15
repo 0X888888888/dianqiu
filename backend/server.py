@@ -116,6 +116,7 @@ class GameState(BaseModel):
     current_round: int = 0
     current_pot_wei: str = "0"
     last_shooter: str = ""
+    top_shooters: list = []  # [addr1, addr2, addr3] (top1=最近, address(0) 表示空)
     time_remaining_seconds: int = 0
     deadline_unix: int = 0
     shot_count: int = 0
@@ -133,11 +134,15 @@ class GameState(BaseModel):
 
 class RoundRecord(BaseModel):
     round_id: int
-    winner: str
-    prize_wei: str
+    winners: list = []          # [addr1, addr2, addr3] (Top-3 领奖台)
+    prizes_wei: list = []       # [wei1, wei2, wei3]
+    carried_over_wei: str = "0"
     settled_at: int
     total_shots: int
     tx_hash: str = ""
+    # 向后兼容字段（已弃用，仅返回 winners[0]）
+    winner: str = ""
+    prize_wei: str = "0"
 
 class ShotRecord(BaseModel):
     round_id: int
@@ -187,6 +192,8 @@ VAULT_ABI = json.loads("""
 {"type":"function","name":"keeperFeeBps","inputs":[],"outputs":[{"type":"uint256"}],"stateMutability":"view"},
 {"type":"function","name":"lastShotPotMark","inputs":[],"outputs":[{"type":"uint256"}],"stateMutability":"view"},
 {"type":"function","name":"description","inputs":[],"outputs":[{"type":"string"}],"stateMutability":"view"},
+{"type":"function","name":"topShooters","inputs":[{"type":"uint256"}],"outputs":[{"type":"address"}],"stateMutability":"view"},
+{"type":"function","name":"currentPodium","inputs":[],"outputs":[{"type":"address[3]"}],"stateMutability":"view"},
 {"type":"function","name":"shoot","inputs":[{"name":"player","type":"address"}],"outputs":[],"stateMutability":"nonpayable"},
 {"type":"function","name":"settleRound","inputs":[],"outputs":[],"stateMutability":"nonpayable"},
 {"type":"event","name":"ShotFired","inputs":[
@@ -199,8 +206,12 @@ VAULT_ABI = json.loads("""
 ],"anonymous":false},
 {"type":"event","name":"GoalScored","inputs":[
   {"name":"round","type":"uint256","indexed":true},
-  {"name":"winner","type":"address","indexed":true},
-  {"name":"prize","type":"uint256","indexed":false},
+  {"name":"firstWinner","type":"address","indexed":true},
+  {"name":"firstPrize","type":"uint256","indexed":false},
+  {"name":"secondWinner","type":"address","indexed":false},
+  {"name":"secondPrize","type":"uint256","indexed":false},
+  {"name":"thirdWinner","type":"address","indexed":false},
+  {"name":"thirdPrize","type":"uint256","indexed":false},
   {"name":"carriedOver","type":"uint256","indexed":false},
   {"name":"totalShots","type":"uint256","indexed":false}
 ],"anonymous":false}
@@ -484,21 +495,29 @@ class BotManager:
                 txh = lg["transactionHash"].hex() if hasattr(lg["transactionHash"], "hex") else str(lg["transactionHash"])
                 if not txh.startswith("0x"):
                     txh = "0x" + txh
+                args = lg["args"]
+                winners = [str(args["firstWinner"]), str(args["secondWinner"]), str(args["thirdWinner"])]
+                prizes = [str(args["firstPrize"]), str(args["secondPrize"]), str(args["thirdPrize"])]
+                # 总奖金 = top3 之和（向后兼容 winner/prize_wei = top1）
+                total_prize = sum(int(p) for p in prizes)
                 doc = {
-                    "round_id": int(lg["args"]["round"]),
-                    "winner": str(lg["args"]["winner"]),
-                    "prize_wei": str(lg["args"]["prize"]),
-                    "carried_over_wei": str(lg["args"]["carriedOver"]),
-                    "total_shots": int(lg["args"]["totalShots"]),
+                    "round_id": int(args["round"]),
+                    "winners": winners,
+                    "prizes_wei": prizes,
+                    "carried_over_wei": str(args["carriedOver"]),
+                    "total_shots": int(args["totalShots"]),
                     "settled_at": int(time.time()),
                     "tx_hash": txh,
+                    # 向后兼容
+                    "winner": winners[0],
+                    "prize_wei": str(total_prize),
                 }
                 await col_rounds.update_one(
                     {"round_id": doc["round_id"]},
                     {"$set": doc}, upsert=True
                 )
                 await self.broadcast("goal", doc)
-                await self.log("info", f"🏆 GOAL! Round#{doc['round_id']} winner={doc['winner']} prize={doc['prize_wei']} wei")
+                await self.log("info", f"🏆 GOAL! Round#{doc['round_id']} podium={[w[:10] for w in winners]} prizes={prizes}")
         except Exception as e:
             await self.log("warn", f"处理 vault 事件失败: {str(e)[:160]}")
             return False
@@ -649,6 +668,13 @@ async def build_game_state() -> dict:
         state.time_remaining_seconds = vault.functions.timeRemaining().call()
         state.pending_tax_in_processor_wei = str(vault.functions.pendingTaxInProcessor().call())
         state.description = vault.functions.description().call()
+        # Top-3 领奖台
+        try:
+            podium = vault.functions.currentPodium().call()
+            state.top_shooters = [str(p) for p in podium]
+        except Exception:
+            # 旧版合约兼容：currentPodium 不存在则只读 lastShooter
+            state.top_shooters = [state.last_shooter, "0x0000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000"]
         try:
             mvs = vault.functions.minShotValue().call()
             lspm = vault.functions.lastShotPotMark().call()

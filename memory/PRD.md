@@ -75,6 +75,10 @@
 | 2026-02 | PlayPanel 基于合约 minShotValue 动态计算推荐买入金额（覆盖税收稀释） |
 | 2026-02 | /game/state 暴露 `min_shot_value_wei` / `new_amount_since_last_shot_wei` / `recent_low_tax_buys` |
 
+| 2026-02 | **Top-3 领奖台升级**：合约 `topShooters[3]` + 40/24/16/20% 分配 + 同人去重晋升逻辑（24/24 Foundry 测试） |
+| 2026-02 | 后端 ABI + `GoalScored` 事件新字段 + `RoundRecord(winners[],prizes_wei[])` + GameState.top_shooters |
+| 2026-02 | 前端 Dashboard 三甲领奖台组件（Podium）+ Hall of Goals 多人奖牌展示 + 规则文案改写 |
+
 ## 待办（P1+）
 - [x] 用户钱包连接（MetaMask）+ 前端直接调 `buyAndShoot()` ✅
 - [x] Admin 强制开球（Keeper 自动补足奖池差额 + shoot） ✅

@@ -247,18 +247,19 @@ contract PenaltyShootoutVaultTest is Test {
         vault.settleRound();
     }
 
-    // ─── settleRound：80/20 分配 ─────────────────────────────
-    function test_settleRound_payoutSplit() public {
-        // 多次射门累积奖池
+    // ─── settleRound：Top-3 领奖台 40/24/16 + 20% 滚动 ──────
+    function test_settleRound_podiumPayoutSplit() public {
+        // 三位选手依次射门 → bob 是 lastShooter（top1），alice 是 top2
         taxProc.setPending(1 ether);
         vm.prank(keeper);
-        vault.shoot(alice);
+        vault.shoot(alice); // top1 = alice
 
         taxProc.setPending(1 ether);
         vm.prank(keeper);
-        vault.shoot(bob);
+        vault.shoot(bob);   // top1 = bob, top2 = alice
 
         uint256 potBefore = vault.currentPot();
+        uint256 aliceBalBefore = alice.balance;
         uint256 bobBalBefore = bob.balance;
 
         // 时间快进到结算
@@ -268,21 +269,92 @@ contract PenaltyShootoutVaultTest is Test {
         vm.prank(charlie);
         vault.settleRound();
 
-        // 检查：
-        uint256 expectedPrize = (potBefore * 8000) / 10000;
-        uint256 expectedCarry = potBefore - expectedPrize;
+        // 检查 prize 分配
+        uint256 firstPrize  = (potBefore * 4000) / 10000;
+        uint256 secondPrize = (potBefore * 2400) / 10000;
+        // 没有第 3 名 → 16% 并入 carry
+        uint256 expectedCarry = potBefore - firstPrize - secondPrize;
 
-        assertEq(bob.balance, bobBalBefore + expectedPrize, "winner got 80%");
+        assertEq(bob.balance, bobBalBefore + firstPrize, "1st got 40%");
+        assertEq(alice.balance, aliceBalBefore + secondPrize, "2nd got 24%");
         assertEq(vault.currentRound(), 2, "round advanced");
-        assertEq(vault.currentPot(), expectedCarry, "20% rolled over");
-        assertEq(vault.lastShooter(), address(0), "shooter reset");
+        assertEq(vault.currentPot(), expectedCarry, "20% + empty 3rd rolled over");
+        assertEq(vault.lastShooter(), address(0), "podium reset");
         assertEq(vault.shotCount(), 0, "shots reset");
 
-        // 历史记录
+        // 历史记录（数组结构）
         PenaltyShootoutVault.Round memory r = vault.getRound(1);
-        assertEq(r.winner, bob);
-        assertEq(r.prize, expectedPrize);
+        assertEq(r.winners[0], bob);
+        assertEq(r.winners[1], alice);
+        assertEq(r.winners[2], address(0));
+        assertEq(r.prizes[0], firstPrize);
+        assertEq(r.prizes[1], secondPrize);
+        assertEq(r.prizes[2], 0);
         assertEq(r.totalShots, 2);
+    }
+
+    // ─── 领奖台轮转：三人各打一次 ─────────────────────────────
+    function test_podium_threePlayersFullSplit() public {
+        taxProc.setPending(1 ether);
+        vm.prank(keeper); vault.shoot(alice);   // [a,0,0]
+        taxProc.setPending(1 ether);
+        vm.prank(keeper); vault.shoot(bob);     // [b,a,0]
+        taxProc.setPending(1 ether);
+        vm.prank(keeper); vault.shoot(charlie); // [c,b,a]
+
+        address[3] memory podium = vault.currentPodium();
+        assertEq(podium[0], charlie);
+        assertEq(podium[1], bob);
+        assertEq(podium[2], alice);
+
+        uint256 pot = vault.currentPot();
+        uint256 aliceBalBefore = alice.balance;
+        uint256 bobBalBefore = bob.balance;
+        uint256 charlieBalBefore = charlie.balance;
+
+        vm.warp(block.timestamp + SHOT_WINDOW + 1);
+        vault.settleRound();
+
+        uint256 firstP  = (pot * 4000) / 10000;
+        uint256 secondP = (pot * 2400) / 10000;
+        uint256 thirdP  = (pot * 1600) / 10000;
+
+        assertEq(charlie.balance, charlieBalBefore + firstP, "charlie 40%");
+        assertEq(bob.balance, bobBalBefore + secondP, "bob 24%");
+        assertEq(alice.balance, aliceBalBefore + thirdP, "alice 16%");
+        assertEq(vault.currentPot(), pot - firstP - secondP - thirdP, "20% carry");
+    }
+
+    // ─── 同一玩家连续射门：不应被重复加入领奖台 ───────────────
+    function test_podium_sameShooterDedup() public {
+        taxProc.setPending(1 ether);
+        vm.prank(keeper); vault.shoot(alice);
+        taxProc.setPending(1 ether);
+        vm.prank(keeper); vault.shoot(alice); // 同一人，不应轮转
+        taxProc.setPending(1 ether);
+        vm.prank(keeper); vault.shoot(bob);   // [bob, alice, 0]
+
+        address[3] memory podium = vault.currentPodium();
+        assertEq(podium[0], bob);
+        assertEq(podium[1], alice);
+        assertEq(podium[2], address(0));
+    }
+
+    // ─── 旧 top3 玩家二次射门：晋升到 top1 ──────────────────
+    function test_podium_promoteFromBottom() public {
+        taxProc.setPending(1 ether);
+        vm.prank(keeper); vault.shoot(alice);   // [a,0,0]
+        taxProc.setPending(1 ether);
+        vm.prank(keeper); vault.shoot(bob);     // [b,a,0]
+        taxProc.setPending(1 ether);
+        vm.prank(keeper); vault.shoot(charlie); // [c,b,a]
+        taxProc.setPending(1 ether);
+        vm.prank(keeper); vault.shoot(alice);   // alice 从位置 2 晋升到 0：[a,c,b]
+
+        address[3] memory podium = vault.currentPodium();
+        assertEq(podium[0], alice);
+        assertEq(podium[1], charlie);
+        assertEq(podium[2], bob);
     }
 
     // ─── keeper 激励发放 ──────────────────────────────────────
@@ -331,7 +403,7 @@ contract PenaltyShootoutVaultTest is Test {
         assertEq(vault.lastShooter(), bob);
         // 历史轮 1 已记录 Alice 胜
         PenaltyShootoutVault.Round memory r = vault.getRound(1);
-        assertEq(r.winner, alice);
+        assertEq(r.winners[0], alice);
     }
 
     // ─── buyAndShoot 集成 ────────────────────────────────────
