@@ -119,6 +119,16 @@ function AdminPanel({ onLogout }) {
 
   const startBot = async () => { await api.post("/admin/bot/start"); load(); };
   const stopBot = async () => { await api.post("/admin/bot/stop"); load(); };
+  const forceShoot = async () => {
+    if (!window.confirm("⚽ 强制开球：Keeper 钱包会自动补足奖池差额到 minShotValue，然后立即调 shoot()。是否继续？")) return;
+    try {
+      const r = await api.post("/admin/force-shoot");
+      window.alert(`✅ 强制 shoot 成功！\nPlayer: ${r.data.player}\nshoot_tx: ${r.data.shoot_tx}\n${r.data.topup_tx ? '补足 tx: ' + r.data.topup_tx : ''}`);
+      load();
+    } catch (e) {
+      window.alert(`❌ 失败: ${e.response?.data?.detail || e.message}`);
+    }
+  };
   const generateWallet = async () => {
     if (!confirm("生成新的 Keeper 钱包？私钥仅显示一次，必须备份。")) return;
     const r = await api.post("/admin/wallet/generate");
