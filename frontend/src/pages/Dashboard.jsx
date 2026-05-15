@@ -42,6 +42,15 @@ export default function Dashboard() {
         setShots((prev) => [msg.data, ...prev].slice(0, 30));
       } else if (msg.type === "goal") {
         setRounds((prev) => [msg.data, ...prev].slice(0, 10));
+      } else if (msg.type === "low_tax_buy") {
+        // 增量更新 state.recent_low_tax_buys
+        setState((prev) => {
+          if (!prev) return prev;
+          const cur = prev.recent_low_tax_buys || [];
+          const dup = cur.find((b) => b.tx_hash === msg.data.tx_hash);
+          if (dup) return prev;
+          return { ...prev, recent_low_tax_buys: [...cur, msg.data].slice(-50) };
+        });
       }
     });
 
@@ -166,6 +175,7 @@ export default function Dashboard() {
               <RoundsLeaderboard rounds={rounds} chainId={state?.chain_id} />
             </div>
           </div>
+          <LowTaxFeed lowTax={state?.recent_low_tax_buys || []} minShotWei={state?.min_shot_value_wei} chainId={state?.chain_id} />
         </section>
 
         {/* Rules */}
@@ -220,6 +230,40 @@ function Stat({ label, value, unit, testid, link }) {
     return <a href={link} target="_blank" rel="noreferrer" className="hover:text-primary transition-colors">{content}</a>;
   }
   return <div>{content}</div>;
+}
+
+function LowTaxFeed({ lowTax, minShotWei, chainId }) {
+  const now = Math.floor(Date.now() / 1000);
+  const recent = (lowTax || []).filter((b) => now - (b.ts || 0) < 600).slice(-6).reverse();
+  if (recent.length === 0) return null;
+  return (
+    <div className="mt-6 panel p-6 border-l-4 border-accent" data-testid="low-tax-feed">
+      <div className="flex items-center mb-3">
+        <div className="font-display text-xl text-accent">⚠ 未达门槛的最近买入 / Buys Below Threshold</div>
+        <div className="flex-1"></div>
+        <div className="text-muted text-xs">
+          minShotValue = {fmtBnb(minShotWei || "0", 6)} BNB
+        </div>
+      </div>
+      <div className="text-muted text-xs mb-3 leading-relaxed">
+        以下买入虽被监听到，但 FLAP 1% 税收稀释后到达金库的 BNB 不达合约门槛，bot 不会触发 shoot。建议加大单笔金额。
+      </div>
+      <div className="space-y-2">
+        {recent.map((b) => (
+          <div key={b.tx_hash} className="flex items-center gap-3 panel-bright p-3 text-xs" data-testid="low-tax-row">
+            <a href={explorerUrl(chainId, "address", b.buyer)} target="_blank" rel="noreferrer" className="font-mono text-white hover:text-primary">
+              {fmtAddr(b.buyer)}
+            </a>
+            <div className="flex-1 text-muted">
+              到达金库 <span className="text-danger">{fmtBnb(b.delta_wei, 6)}</span> &lt; 门槛 <span className="text-primary">{fmtBnb(b.min_shot_wei, 6)}</span> BNB
+            </div>
+            <span className="text-muted">{fmtRelativeTime(b.ts)}</span>
+            <a href={explorerUrl(chainId, "tx", b.tx_hash)} target="_blank" rel="noreferrer" className="text-muted hover:text-primary">tx ↗</a>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function ShotsFeed({ shots, chainId }) {

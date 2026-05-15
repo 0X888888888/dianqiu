@@ -126,6 +126,9 @@ class GameState(BaseModel):
     last_block: int = 0
     keeper_address: str = ""
     keeper_balance_bnb: str = "0"
+    min_shot_value_wei: str = "0"
+    new_amount_since_last_shot_wei: str = "0"
+    recent_low_tax_buys: list = []  # [{buyer, ts, est_tax_wei, tx_hash}]
     updated_at: str = ""
 
 class RoundRecord(BaseModel):
@@ -215,6 +218,7 @@ class BotManager:
         self.last_block = 0
         self.last_error = ""
         self.last_buyers: Dict[str, int] = {}  # address -> timestamp 最近购买者池
+        self.recent_low_tax_buys: List[dict] = []  # 最近被忽略（税收稀释不足 minShotValue）的买入
         self.ws_clients: List[WebSocket] = []
         self._stop_flag = False
         self._last_ratelimit_log = 0
@@ -377,6 +381,7 @@ class BotManager:
                 continue
 
         new_buyers_count = 0
+        new_buyers_this_batch: List[str] = []
         for txh, transfers in by_tx.items():
             # 找该 tx 内所有作为 from 出现过的地址
             froms = {fr for fr, _ in transfers}
@@ -392,10 +397,39 @@ class BotManager:
                 # 取最后一个（最终的最终）
                 real_buyer = Web3.to_checksum_address(finals[-1])
                 self.last_buyers[real_buyer] = int(time.time())
+                new_buyers_this_batch.append((real_buyer, txh))
                 new_buyers_count += 1
 
         if new_buyers_count > 0:
             await self.log("info", f"🎯 扫到 {new_buyers_count} 笔买入 [{from_block}-{to_block}]，最新买家={list(self.last_buyers.keys())[-1][:10]}...")
+
+        # 检测税收稀释：如果新买入但 pot delta 仍 < minShotValue，记录为"低税被忽略"
+        if new_buyers_this_batch:
+            try:
+                cfg_now = await get_config()
+                if cfg_now.vault_address:
+                    vault_now = w3.eth.contract(address=Web3.to_checksum_address(cfg_now.vault_address), abi=VAULT_ABI)
+                    cp = vault_now.functions.currentPot().call()
+                    lspm = vault_now.functions.lastShotPotMark().call()
+                    mvs = vault_now.functions.minShotValue().call()
+                    delta = cp - lspm
+                    if delta < mvs:
+                        for buyer, tx_hash in new_buyers_this_batch:
+                            entry = {
+                                "buyer": buyer,
+                                "tx_hash": tx_hash if tx_hash.startswith("0x") else f"0x{tx_hash}",
+                                "ts": int(time.time()),
+                                "delta_wei": str(delta),
+                                "min_shot_wei": str(mvs),
+                            }
+                            self.recent_low_tax_buys.append(entry)
+                            await self.broadcast("low_tax_buy", entry)
+                        # 仅保留最近 30 分钟
+                        cutoff_low = int(time.time()) - 1800
+                        self.recent_low_tax_buys = [e for e in self.recent_low_tax_buys if e["ts"] > cutoff_low][-50:]
+                        await self.log("warn", f"⚠ {len(new_buyers_this_batch)} 笔买入到达金库的 BNB 仅 {delta} wei，未达 minShotValue={mvs}，被忽略")
+            except Exception as e:
+                logger.debug(f"low-tax detection skip: {e}")
 
         # 清理 90s 以上的旧记录
         cutoff = int(time.time()) - 90
@@ -615,6 +649,16 @@ async def build_game_state() -> dict:
         state.time_remaining_seconds = vault.functions.timeRemaining().call()
         state.pending_tax_in_processor_wei = str(vault.functions.pendingTaxInProcessor().call())
         state.description = vault.functions.description().call()
+        try:
+            mvs = vault.functions.minShotValue().call()
+            lspm = vault.functions.lastShotPotMark().call()
+            cp = int(state.current_pot_wei)
+            state.min_shot_value_wei = str(mvs)
+            state.new_amount_since_last_shot_wei = str(max(0, cp - lspm))
+        except Exception:
+            pass
+        # 暴露最近被忽略（税收不足）的买入，方便前端提示用户
+        state.recent_low_tax_buys = list(bot_manager.recent_low_tax_buys)[-10:]
         if cfg.keeper_address:
             bal = w3.eth.get_balance(Web3.to_checksum_address(cfg.keeper_address))
             state.keeper_balance_bnb = str(bal)
@@ -747,6 +791,8 @@ async def force_shoot(player: Optional[str] = None, _=Depends(verify_jwt)):
 
         priv = decrypt_str(cfg.keeper_private_key_encrypted)
         acct = Account.from_key(priv)
+        # 用 pending 拿到下一个可用 nonce（避免 BSC 公共节点最终一致性问题）
+        nonce = w3.eth.get_transaction_count(acct.address, "pending")
 
         # 默认 player = 最近一个买家；没有就 = keeper 地址
         if player:
@@ -768,7 +814,7 @@ async def force_shoot(player: Optional[str] = None, _=Depends(verify_jwt)):
             tx = {
                 "to": vault_addr,
                 "value": shortfall,
-                "nonce": w3.eth.get_transaction_count(acct.address),
+                "nonce": nonce,
                 "gas": 100000,
                 "gasPrice": w3.eth.gas_price,
                 "chainId": cfg.chain_id,
@@ -779,11 +825,12 @@ async def force_shoot(player: Optional[str] = None, _=Depends(verify_jwt)):
             await bot_manager.log("info", f"💰 Keeper 转 {shortfall} wei 给 vault 凑门槛, tx={result['topup_tx']}")
             # 等待 receipt 确认入账
             w3.eth.wait_for_transaction_receipt(txh, timeout=60)
+            nonce += 1  # 手动递增，避免 RPC eventual consistency 问题
 
-        # 调 shoot
+        # 调 shoot（用我们维护的 nonce，不再 refetch）
         tx = vault.functions.shoot(target).build_transaction({
             "from": acct.address,
-            "nonce": w3.eth.get_transaction_count(acct.address),
+            "nonce": nonce,
             "gas": 1500000,
             "gasPrice": int(w3.eth.gas_price * 1.5),  # 1.5x 加价抢跑 MEV
             "chainId": cfg.chain_id,
@@ -794,7 +841,11 @@ async def force_shoot(player: Optional[str] = None, _=Depends(verify_jwt)):
         await bot_manager.log("info", f"⚽ Force-shoot for {target[:10]}..., tx={result['shoot_tx']}")
         return result
     except Exception as e:
-        raise HTTPException(500, detail=f"force-shoot failed: {str(e)[:200]}")
+        import traceback
+        tb = traceback.format_exc()
+        await bot_manager.log("error", f"❌ Force-shoot failed: {str(e)[:300]}")
+        logger.error(f"[Force-Shoot] Exception: {tb}")
+        raise HTTPException(500, detail=f"force-shoot failed: {str(e)[:300]}")
 
 
 @api.post("/admin/manual-shoot")

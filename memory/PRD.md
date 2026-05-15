@@ -68,9 +68,17 @@
 | 2026-01 | Phase 2 后端 FastAPI + Bot Manager |
 | 2026-01 | Phase 2 前端 React 仪表盘 + Admin |
 | 2026-01 | RPC UNREACHABLE banner / 0x prefix 一致性修复 |
+| 2026-02 | Web3 PlayPanel（钱包连接 + buyAndShoot/shoot/settleRound） |
+| 2026-02 | Admin 强制开球：修复 BSC 公共节点 nonce 最终一致性导致 500（使用 pending nonce + 手动递增） |
+| 2026-02 | Admin Toast 通知（sonner 替代 window.alert） |
+| 2026-02 | 公开仪表盘新增 `LowTaxFeed`：实时显示被忽略的低税买入 |
+| 2026-02 | PlayPanel 基于合约 minShotValue 动态计算推荐买入金额（覆盖税收稀释） |
+| 2026-02 | /game/state 暴露 `min_shot_value_wei` / `new_amount_since_last_shot_wei` / `recent_low_tax_buys` |
 
 ## 待办（P1+）
-- [ ] 用户钱包连接（MetaMask）+ 前端直接调 `buyAndShoot()`
+- [x] 用户钱包连接（MetaMask）+ 前端直接调 `buyAndShoot()` ✅
+- [x] Admin 强制开球（Keeper 自动补足奖池差额 + shoot） ✅
+- [x] Toast 通知 + 低税被忽略实时反馈 ✅
 - [ ] 历史轮次详情页（每轮逐脚射门时间线回放）
 - [ ] Discord/Telegram 集成（自动播报冠军）
 - [ ] Twitter 战绩分享卡片生成器

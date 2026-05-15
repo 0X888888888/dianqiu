@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { connectWallet, buyAndShoot, shoot, settleRound, listenAccountChanges } from "../lib/wallet";
-import { fmtAddr, explorerUrl } from "../lib/api";
+import { fmtAddr, explorerUrl, fmtBnb } from "../lib/api";
 
 /**
  * PlayPanel — 用户在前端直接连接钱包并参与游戏（无需跳转 Flap.sh）
@@ -93,6 +93,26 @@ export default function PlayPanel({ state }) {
     && state?.deadline_unix > 0
     && state?.last_shooter && state.last_shooter !== "0x0000000000000000000000000000000000000000";
 
+  // 根据合约 minShotValue 计算建议买入 BNB：假定有效到金库率 ~0.8%（1% 税 × ~80% 入池），留 30% 安全边界
+  const suggested = useMemo(() => {
+    try {
+      const min = BigInt(state?.min_shot_value_wei || "0");
+      if (min === 0n) return null;
+      // 建议 = min / 0.008 × 1.3 ≈ min * 1300 / 8
+      const rec = (min * 1300n) / 8n;
+      const recBnb = Number(rec) / 1e18;
+      const minBnb = Number(min) / 1e18;
+      return { rec: recBnb.toFixed(3), threshold: minBnb.toFixed(4) };
+    } catch { return null; }
+  }, [state?.min_shot_value_wei]);
+
+  // 检查当前钱包是否在 recent_low_tax_buys 中（用于针对性提示）
+  const myLowTaxBuy = useMemo(() => {
+    if (!wallet || !state?.recent_low_tax_buys?.length) return null;
+    const me = wallet.address.toLowerCase();
+    return state.recent_low_tax_buys.find((b) => b.buyer?.toLowerCase() === me) || null;
+  }, [wallet, state?.recent_low_tax_buys]);
+
   return (
     <div className="panel-bright p-6" data-testid="play-panel">
       <div className="flex items-center mb-4">
@@ -152,8 +172,27 @@ export default function PlayPanel({ state }) {
           <div className="text-muted text-xs mt-2 leading-relaxed">
             金库会代您在 Flap 内盘买入 taxToken，代币到您钱包后自动射门重置倒计时。
             <br/>
-            <span className="text-accent">💡 建议单笔 ≥ {state?.min_shot_value_bnb || "0.1"} BNB，否则可能因税收稀释不达 minShotValue 而失败</span>
+            <span className="text-accent">
+              💡 推荐单笔 ≥ {suggested?.rec || "0.1"} BNB（合约门槛 minShotValue = {suggested?.threshold || "0.001"} BNB）
+            </span>
+            <br/>
+            <span className="text-muted">
+              小于该金额时，FLAP 1% 税收稀释后到达金库的 BNB 可能不达门槛，bot 会忽略您的射门。
+            </span>
           </div>
+          {myLowTaxBuy && (
+            <div className="mt-3 p-3 border-l-4 border-accent bg-bg text-xs" data-testid="my-low-tax-warning">
+              <div className="text-accent font-bold mb-1">⚠ 您最近的买入未达到射门门槛</div>
+              <div className="text-muted">
+                tx: <a href={explorerUrl(state?.chain_id, "tx", myLowTaxBuy.tx_hash)} target="_blank" rel="noreferrer" className="text-primary hover:underline">
+                  {myLowTaxBuy.tx_hash.slice(0, 14)}…
+                </a>
+                <br/>
+                到达金库 {fmtBnb(myLowTaxBuy.delta_wei, 6)} BNB &lt; 门槛 {fmtBnb(myLowTaxBuy.min_shot_wei, 6)} BNB。
+                请加大单笔金额（推荐 ≥ {suggested?.rec || "0.1"} BNB）。
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <div>

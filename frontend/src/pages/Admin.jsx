@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, fmtAddr, fmtBnb } from "../lib/api";
+import { toast } from "../components/ui/sonner";
 
 export default function Admin() {
   const [token, setToken] = useState(localStorage.getItem("admin_token") || "");
@@ -121,12 +122,16 @@ function AdminPanel({ onLogout }) {
   const stopBot = async () => { await api.post("/admin/bot/stop"); load(); };
   const forceShoot = async () => {
     if (!window.confirm("⚽ 强制开球：Keeper 钱包会自动补足奖池差额到 minShotValue，然后立即调 shoot()。是否继续？")) return;
+    const tid = toast.loading("⚽ 正在发送 force-shoot 交易…");
     try {
       const r = await api.post("/admin/force-shoot");
-      window.alert(`✅ 强制 shoot 成功！\nPlayer: ${r.data.player}\nshoot_tx: ${r.data.shoot_tx}\n${r.data.topup_tx ? '补足 tx: ' + r.data.topup_tx : ''}`);
+      const lines = [`Player: ${fmtAddr(r.data.player)}`, `shoot_tx: ${r.data.shoot_tx?.slice(0, 18)}…`];
+      if (r.data.topup_tx) lines.push(`补足 tx: ${r.data.topup_tx.slice(0, 18)}…`);
+      toast.success("✅ 强制 shoot 成功", { id: tid, description: lines.join("\n"), duration: 8000 });
       load();
     } catch (e) {
-      window.alert(`❌ 失败: ${e.response?.data?.detail || e.message}`);
+      const msg = e.response?.data?.detail || e.message || "未知错误";
+      toast.error("❌ 强制 shoot 失败", { id: tid, description: msg, duration: 10000 });
     }
   };
   const generateWallet = async () => {
