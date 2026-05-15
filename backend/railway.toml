@@ -1,0 +1,13 @@
+# Railway 部署配置
+# 文档：https://docs.railway.com/reference/config-as-code
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Railway 会自动注入 $PORT；Dockerfile 已处理
+startCommand = "uvicorn server:app --host 0.0.0.0 --port ${PORT:-8001} --workers 1"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
