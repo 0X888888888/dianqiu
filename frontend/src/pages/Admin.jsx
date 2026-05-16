@@ -9,8 +9,8 @@ export default function Admin() {
 }
 
 function Login({ onLogin }) {
-  const [username, setUsername] = useState("admin");
-  const [password, setPassword] = useState("shootout2026");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -41,7 +41,7 @@ function Login({ onLogin }) {
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="admin"
+              placeholder="username"
               autoComplete="off"
               autoCorrect="off"
               spellCheck="false"
@@ -56,7 +56,7 @@ function Login({ onLogin }) {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="shootout2026"
+              placeholder="••••••••"
               autoComplete="new-password"
               data-testid="login-password"
               style={{ backgroundColor: "#1B241B", color: "#FFFFFF", WebkitTextFillColor: "#FFFFFF" }}
@@ -73,9 +73,8 @@ function Login({ onLogin }) {
             {loading ? "Loading…" : "登录 / Login"}
           </button>
         </div>
-        <div className="text-muted text-xs mt-4">
-          默认账户 / Default: <code className="text-accent">admin</code> / <code className="text-accent">shootout2026</code><br/>
-          请尽快修改环境变量 ADMIN_PASSWORD
+        <div className="text-muted text-xs mt-4 opacity-60">
+          🔒 仅限管理员访问 / Authorized personnel only
         </div>
       </div>
     </div>
