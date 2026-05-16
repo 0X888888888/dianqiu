@@ -209,9 +209,6 @@ function Header({ state }) {
         </div>
         <div className="flex-1"></div>
         <BotStatusBadge state={state} />
-        <a href="/admin" className="btn-ghost px-3 py-2 text-xs uppercase tracking-wider" data-testid="admin-link">
-          Admin
-        </a>
       </div>
     </header>
   );
